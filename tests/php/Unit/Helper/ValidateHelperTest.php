@@ -420,6 +420,49 @@ final class ValidateHelperTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->addToAssertionCount(1);
 	}
 
+	public function testValidateIdentifySignersAllowsObserverWhenDisabledSnapshotAndLivePolicyEnabled(): void {
+		$signatureMethod = $this->createMock(ISignatureMethod::class);
+		$identifyMethod = $this->createMock(IIdentifyMethod::class);
+		$identifyMethod->method('getSignatureMethods')->willReturn([$signatureMethod]);
+		$identifyMethod->method('validateToRequest');
+		$this->identifyMethodService
+			->method('getInstanceOfIdentifyMethod')
+			->willReturn($identifyMethod);
+
+		$file = $this->createLibresignFile();
+		$file->setMetadata([
+			'policy_snapshot' => [
+				ObserverProfilePolicy::KEY => [
+					'effectiveValue' => false,
+					'sourceScope' => 'system',
+				],
+			],
+		]);
+		$this->fileMapper
+			->method('getByUuid')
+			->with('ffffffff-ffff-ffff-ffff-ffffffffffff')
+			->willReturn($file);
+		$this->policyService
+			->method('resolve')
+			->with(ObserverProfilePolicy::KEY)
+			->willReturn((new ResolvedPolicy())->setEffectiveValue(true));
+
+		$this->getValidateHelper()->validateIdentifySigners([
+			'uuid' => 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+			'status' => FileStatus::DRAFT->value,
+			'signers' => [
+				[
+					'participantRole' => 'observer',
+					'identifyMethods' => [
+						['method' => 'email', 'value' => 'witness@example.com'],
+					],
+				],
+			],
+		]);
+
+		$this->addToAssertionCount(1);
+	}
+
 	public function testValidateFileWithoutAllNecessaryData():void {
 		$this->expectExceptionMessageMatches('/File type: %s. Specify a/');
 		$this->getValidateHelper()->validateFile([
