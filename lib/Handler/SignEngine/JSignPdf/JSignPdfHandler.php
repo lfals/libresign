@@ -6,18 +6,17 @@ declare(strict_types=1);
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-namespace OCA\Libresign\Handler\SignEngine;
+namespace OCA\Libresign\Handler\SignEngine\JSignPdf;
 
 use Imagick;
 use ImagickPixel;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
+use OCA\Libresign\Handler\SignEngine\Pkcs12Handler;
 use OCA\Libresign\Helper\JavaHelper;
 use OCA\Libresign\Service\DocMdp\ConfigService as DocMdpConfigService;
-use OCA\Libresign\Service\Install\InstallService;
 use OCA\Libresign\Service\Policy\PolicyService;
-use OCA\Libresign\Service\Policy\Provider\SignatureHashAlgorithm\SignatureHashAlgorithmPolicy;
 use OCA\Libresign\Service\Policy\Provider\SignatureText\SignatureTextPolicyValue;
 use OCA\Libresign\Service\Policy\Provider\Tsa\TsaPolicy;
 use OCA\Libresign\Service\Policy\Provider\Tsa\TsaPolicyValue;
@@ -34,9 +33,7 @@ use Psr\Log\LoggerInterface;
 class JSignPdfHandler extends Pkcs12Handler {
 	private const float MIN_PDF_VERSION = 1.2;
 	private const string TARGET_OLD_PDF_VERSION = '1.3';
-	private const float MIN_PDF_VERSION_SHA256 = 1.6;
 	private const string TARGET_PDF_VERSION_SHA256 = '1.6';
-	private const float MIN_PDF_VERSION_SHA1_REJECT = 1.7;
 	private const int PAGE_FIRST = 1;
 	private const int SCALE_FACTOR_MIN = 5;
 
@@ -56,6 +53,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 		protected CertificateEngineFactory $certificateEngineFactory,
 		protected JavaHelper $javaHelper,
 		private DocMdpConfigService $docMdpConfigService,
+		private HashAlgorithmResolver $hashAlgorithmResolver,
 	) {
 	}
 
@@ -82,32 +80,27 @@ class JSignPdfHandler extends Pkcs12Handler {
 			if (!is_writable($tempPath)) {
 				throw new \Exception('The path ' . $tempPath . ' is not writtable. Fix this or change the LibreSign app setting jsignpdf_temp_path to a writtable path');
 			}
-			$jSignPdfJarPath = $this->appConfig->getValueString(Application::APP_ID, 'jsignpdf_jar_path', '/opt/jsignpdf-' . InstallService::JSIGNPDF_VERSION . '/JSignPdf.jar');
-			if (!file_exists($jSignPdfJarPath)) {
-				throw new \Exception('Invalid JSignPdf jar path. Run occ libresign:install --jsignpdf');
+			$jSignPdfPath = $this->appConfig->getValueString(Application::APP_ID, 'jsignpdf_path');
+			if (!is_dir($jSignPdfPath)) {
+				throw new \Exception('Invalid JSignPdf path. Run occ libresign:install --jsignpdf');
 			}
+			$home = $this->getHome();
 			$this->jSignParam = (new JSignParam())
 				->setTempPath($tempPath)
 				->setIsUseJavaInstalled(empty($javaPath))
 				->setJavaDownloadUrl('')
 				->setJSignPdfDownloadUrl('')
-				->setjSignPdfJarPath($jSignPdfJarPath);
+				->setJSignPdfPath($jSignPdfPath)
+				->setJavaOptions(['-Duser.home=' . $home])
+				->setEnvironmentVariables(['JSIGNPDF_HOME' => $home]);
 			if (!empty($javaPath)) {
 				if (!file_exists($javaPath)) {
 					throw new \Exception('Invalid Java binary. Run occ libresign:install --java');
 				}
-				$this->jSignParam->setJavaPath(
-					$this->getEnvironments()
-					. $javaPath
-					. ' -Duser.home=' . escapeshellarg($this->getHome()) . ' '
-				);
+				$this->jSignParam->setJavaPath($javaPath);
 			}
 		}
 		return $this->jSignParam;
-	}
-
-	private function getEnvironments(): string {
-		return 'JSIGNPDF_HOME=' . escapeshellarg($this->getHome()) . ' ';
 	}
 
 	/**
@@ -157,47 +150,11 @@ class JSignPdfHandler extends Pkcs12Handler {
 		fclose($file);
 	}
 
-	private function getHashAlgorithm(string $pdfContent): string {
-		$configuredAlgorithm = (string)$this->policyService->resolve(SignatureHashAlgorithmPolicy::KEY)->getEffectiveValue();
-		/**
-		 * Need to respect the follow code:
-		 * https://github.com/intoolswetrust/jsignpdf/blob/JSignPdf_2_2_2/jsignpdf/src/main/java/net/sf/jsignpdf/types/HashAlgorithm.java#L46-L47
-		 */
-		$pdfVersion = $this->extractPdfVersion($pdfContent);
-
-		if ($pdfVersion === null) {
-			return $this->validateHashAlgorithm($configuredAlgorithm);
-		}
-
-		return $this->getHashAlgorithmForPdfVersion($pdfVersion, $configuredAlgorithm);
-	}
-
 	private function extractPdfVersion(string $content): ?float {
 		if (!preg_match('/^%PDF-(?<version>\d+(\.\d+)?)/', $content, $match)) {
 			return null;
 		}
 		return (float)$match['version'];
-	}
-
-	private function getHashAlgorithmForPdfVersion(float $pdfVersion, string $configuredAlgorithm): string {
-		// Legacy compatibility: JSignPdf still requires SHA1 for very old PDFs (< 1.6).
-		// The policy still exposes SHA1 for supported legacy workflows, and the runtime
-		// must continue enforcing this fallback for ancient PDFs that JSignPdf cannot sign otherwise.
-		if ($pdfVersion < 1.6) {
-			return 'SHA1';
-		}
-		if ($pdfVersion < self::MIN_PDF_VERSION_SHA1_REJECT) {
-			return 'SHA256';
-		}
-		if ($pdfVersion >= self::MIN_PDF_VERSION_SHA1_REJECT && $configuredAlgorithm === 'SHA1') {
-			return 'SHA256';
-		}
-		return $this->validateHashAlgorithm($configuredAlgorithm);
-	}
-
-	private function validateHashAlgorithm(string $algorithm): string {
-		$supportedAlgorithms = ['SHA1', 'SHA256', 'SHA384', 'SHA512', 'RIPEMD160'];
-		return in_array($algorithm, $supportedAlgorithms) ? $algorithm : 'SHA256';
 	}
 
 	/**
@@ -219,7 +176,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 
 		// Convert PDFs < 1.6 to 1.6 if using SHA-256 (the default hash algorithm)
 		// This prevents "The chosen hash algorithm (SHA-256) requires a newer PDF version" error
-		if ($this->requiresPdfVersionUpgradeForSha256($version)) {
+		if ($this->hashAlgorithmResolver->requiresPdfVersionUpgradeForSha256($version)) {
 			return $this->replacePdfVersion($content, self::TARGET_PDF_VERSION_SHA256);
 		}
 
@@ -228,14 +185,6 @@ class JSignPdfHandler extends Pkcs12Handler {
 
 	private function isVeryOldPdfVersion(float $version): bool {
 		return $version > 0 && $version < self::MIN_PDF_VERSION;
-	}
-
-	private function requiresPdfVersionUpgradeForSha256(float $version): bool {
-		if ($version >= self::MIN_PDF_VERSION_SHA256) {
-			return false;
-		}
-		$hashAlgorithm = (string)$this->policyService->resolve(SignatureHashAlgorithmPolicy::KEY)->getEffectiveValue();
-		return $hashAlgorithm === 'SHA256';
 	}
 
 	private function replacePdfVersion(string $content, string $newVersion): string {
@@ -262,38 +211,30 @@ class JSignPdfHandler extends Pkcs12Handler {
 	#[\Override]
 	public function getSignedContent(): string {
 		$normalizedPdf = $this->normalizePdfVersion($this->getInputFile()->getContent());
-		$hashAlgorithm = $this->getHashAlgorithm($normalizedPdf);
+		$hashAlgorithm = $this->hashAlgorithmResolver->forSignature($this->extractPdfVersion($normalizedPdf));
 		$param = $this->getJSignParam();
-
-		$tsaParams = $this->listParamsToString($this->getTsaParameters());
-
-		$visibleElements = $this->getVisibleElements();
-		$certParams = '';
-		$certificationLevel = $this->getCertificationLevel();
-		if ($certificationLevel !== null && !$visibleElements && !$this->hasExistingSignatures($normalizedPdf)) {
-			$certParams = ' -cl ' . $certificationLevel;
-		}
-
-		$param->setJSignParameters(
-			$param->getJSignParameters()
-			. $certParams
-			. $tsaParams
-		);
 		$param->setCertificate($this->getCertificate())
 			->setPdf($normalizedPdf)
 			->setPassword($this->getPassword());
+
+		$parameters = [];
+		$certificationLevel = $this->getCertificationLevel();
+		if ($certificationLevel !== null && !$this->getVisibleElements() && !$this->hasExistingSignatures($normalizedPdf)) {
+			$parameters['-cl'] = $certificationLevel;
+		}
+		$parameters += $this->getTsaParameters();
+		$param->addJSignParameters($parameters);
+		$tsaPassword = $this->getTsaPassword();
+		if ($tsaPassword !== '') {
+			$param->setTsaPassword($tsaPassword);
+		}
 
 		$signed = $this->signUsingVisibleElements($normalizedPdf, $hashAlgorithm);
 		if ($signed) {
 			return $signed;
 		}
 
-		$param->setJSignParameters(
-			$param->getJSignParameters()
-			. $this->listParamsToString([
-				'--hash-algorithm' => $hashAlgorithm,
-			])
-		);
+		$param->addJSignParameters(['--hash-algorithm' => $hashAlgorithm]);
 		$jSignPdf = $this->getJSignPdf();
 		$jSignPdf->setParam($param);
 		return $this->signWrapper($jSignPdf);
@@ -313,7 +254,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 			];
 
 			// When l2-text is empty, add hash-algorithm at the beginning
-			if ($params['--l2-text'] === '""') {
+			if ($params['--l2-text'] === '') {
 				$params = [
 					'--hash-algorithm' => $hashAlgorithm,
 					'--l2-text' => $params['--l2-text'],
@@ -322,7 +263,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 			}
 
 			$fontSize = $this->parseSignatureText()['templateFontSize'];
-			if ($fontSize === SignatureTextPolicyValue::DEFAULT_SIGNATURE_FONT_SIZE || !$fontSize || $params['--l2-text'] === '""') {
+			if ($fontSize === SignatureTextPolicyValue::DEFAULT_SIGNATURE_FONT_SIZE || !$fontSize || $params['--l2-text'] === '') {
 				$fontSize = 0;
 			}
 
@@ -335,11 +276,9 @@ class JSignPdfHandler extends Pkcs12Handler {
 
 			$certificationLevel = $this->getCertificationLevel();
 			$applyCertification = $certificationLevel !== null && !$this->hasExistingSignatures($normalizedPdf);
-			$certParams = $applyCertification ? ' -cl ' . $certificationLevel : '';
 			$elementIndex = 0;
 
-			$param = $this->getJSignParam();
-			$originalParam = clone $param;
+			$originalParam = $this->getJSignParam();
 
 			foreach ($visibleElements as $element) {
 				$elementIndex++;
@@ -374,7 +313,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 					} elseif ($signatureImagePath) {
 						$params['--bg-path'] = $signatureImagePath;
 					}
-				} elseif ($params['--l2-text'] === '""') {
+				} elseif ($params['--l2-text'] === '') {
 					if ($backgroundPathForElement && $signatureImagePath) {
 						$params['--bg-path'] = $this->mergeBackgroundWithSignature(
 							$backgroundPathForElement,
@@ -409,16 +348,15 @@ class JSignPdfHandler extends Pkcs12Handler {
 				}
 
 				// Only add hash-algorithm at the end if l2-text is not empty
-				if ($params['--l2-text'] !== '""') {
+				if ($params['--l2-text'] !== '') {
 					$params['--hash-algorithm'] = $hashAlgorithm;
 				}
 
-				$elementCertParams = ($applyCertification && $elementIndex === 1) ? $certParams : '';
-				$param->setJSignParameters(
-					$originalParam->getJSignParameters()
-					. $elementCertParams
-					. $this->listParamsToString($params)
-				);
+				$param = clone $originalParam;
+				if ($applyCertification && $elementIndex === 1) {
+					$param->addJSignParameters(['-cl' => $certificationLevel]);
+				}
+				$param->addJSignParameters($this->toJSignParameters($params));
 				$param->setPdf($normalizedPdf);
 				$jSignPdf->setParam($param);
 				$signed = $this->signWrapper($jSignPdf);
@@ -625,63 +563,68 @@ class JSignPdfHandler extends Pkcs12Handler {
 	public function getSignatureText(): string {
 		$renderMode = $this->signatureTextService->getRenderMode();
 		if ($renderMode !== SignerElementsService::RENDER_MODE_GRAPHIC_ONLY) {
-			$data = $this->parseSignatureText();
-			$signatureText = '"' . str_replace(
-				['"', '$'],
-				['\"', '\$'],
-				$data['parsed']
-			) . '"';
-		} else {
-			$signatureText = '""';
+			return $this->parseSignatureText()['parsed'];
 		}
-
-		return $signatureText;
+		return '';
 	}
 
-	private function listParamsToString(array $params): string {
-		$paramString = '';
-		foreach ($params as $flag => $value) {
-			$paramString .= ' ' . $flag;
-			if ($value !== null && $value !== '') {
-				$paramString .= ' ' . $value;
+	/**
+	 * Options with a null value are flags. Every other value reaches the
+	 * wrapper as a string; the wrapper escapes it for the shell.
+	 *
+	 * @param array<string, string|int|float|null> $params
+	 * @return array<array-key, string>
+	 */
+	private function toJSignParameters(array $params): array {
+		$parameters = [];
+		foreach ($params as $option => $value) {
+			if ($value === null) {
+				$parameters[] = $option;
+				continue;
 			}
+			$parameters[$option] = (string)$value;
 		}
-		return $paramString;
+		return $parameters;
 	}
 
+	/**
+	 * @return array<string, string>
+	 */
 	private function getTsaParameters(): array {
 		$tsaSettings = $this->getTsaSettings();
-		$tsaUrl = $tsaSettings['url'];
-		if (empty($tsaUrl)) {
+		if (empty($tsaSettings['url'])) {
 			return [];
 		}
 
 		$params = [
-			'--tsa-server-url' => $tsaUrl,
-			'--tsa-policy-oid' => $tsaSettings['policy_oid'],
+			'--tsa-server-url' => $tsaSettings['url'],
+			'--tsa-hash-algorithm' => $this->hashAlgorithmResolver->forTsa(),
 		];
-
-		if (!$params['--tsa-policy-oid']) {
-			unset($params['--tsa-policy-oid']);
+		if ($tsaSettings['policy_oid']) {
+			$params['--tsa-policy-oid'] = $tsaSettings['policy_oid'];
 		}
-
-		$tsaAuthType = $tsaSettings['auth_type'];
-		if ($tsaAuthType === 'basic') {
-			$tsaUsername = $tsaSettings['username'];
-			$tsaPassword = $this->appConfig->getValueString(Application::APP_ID, TsaPolicy::PASSWORD_APP_CONFIG_KEY, '');
-
-			if (!empty($tsaUsername) && !empty($tsaPassword)) {
-				$params['--tsa-authentication'] = 'PASSWORD';
-				$params['--tsa-user'] = $tsaUsername;
-				$params['--tsa-password'] = $tsaPassword;
-			}
+		if ($this->getTsaPassword() !== '') {
+			$params['--tsa-authentication'] = 'PASSWORD';
+			$params['--tsa-user'] = $tsaSettings['username'];
 		}
 
 		return $params;
 	}
 
 	/**
-	 * @return array{url: string, policy_oid: string, auth_type: string, username: string}
+	 * The TSA password never goes to the command line: the wrapper writes it
+	 * to the stdin of JSignPdf.
+	 */
+	private function getTsaPassword(): string {
+		$tsaSettings = $this->getTsaSettings();
+		if (empty($tsaSettings['url']) || $tsaSettings['auth_type'] !== 'basic' || empty($tsaSettings['username'])) {
+			return '';
+		}
+		return $this->appConfig->getValueString(Application::APP_ID, TsaPolicy::PASSWORD_APP_CONFIG_KEY, '');
+	}
+
+	/**
+	 * @return array{url: string, policy_oid: string, auth_type: string, username: string, hash_algorithm: string}
 	 */
 	private function getTsaSettings(): array {
 		$resolved = $this->policyService->resolve(TsaPolicy::KEY)->getEffectiveValue();
@@ -695,10 +638,13 @@ class JSignPdfHandler extends Pkcs12Handler {
 		} catch (\Throwable $th) {
 			$errorMessage = $th->getMessage();
 
+			// Log before the checks below: they throw, and the original message
+			// from JSignPdf is the only place where the real cause is described.
+			$this->logger->error('Error at JSignPdf side. LibreSign can not do nothing. Follow the error message: ' . $errorMessage);
+
 			$this->checkTsaError($errorMessage);
 			$this->checkHashAlgorithmError($errorMessage);
 
-			$this->logger->error('Error at JSignPdf side. LibreSign can not do nothing. Follow the error message: ' . $errorMessage);
 			throw new \Exception($errorMessage);
 		}
 	}
@@ -714,6 +660,11 @@ class JSignPdfHandler extends Pkcs12Handler {
 		}
 
 		if ($isTsaError) {
+			$rejectionMessage = $this->getTsaRejectionMessage($errorMessage);
+			if ($rejectionMessage !== null) {
+				throw new LibresignException($rejectionMessage);
+			}
+
 			if (str_contains($errorMessage, 'Invalid TSA') && preg_match("/Invalid TSA '([^']+)'/", $errorMessage, $matches)) {
 				$friendlyMessage = 'Timestamp Authority (TSA) service is unavailable. Check DNS/network/firewall connectivity from this server: ' . $matches[1];
 			} else {
@@ -722,6 +673,22 @@ class JSignPdfHandler extends Pkcs12Handler {
 			}
 			throw new LibresignException($friendlyMessage);
 		}
+	}
+
+	/**
+	 * An HTTP status in the JSignPdf output means that the TSA was reached and
+	 * answered: the request was rejected. Reporting DNS/network/firewall in this
+	 * case sends whoever is debugging to the wrong place.
+	 */
+	private function getTsaRejectionMessage(string $errorMessage): ?string {
+		if (!preg_match('/HTTP response code: (?<status>\d{3})(?: for URL: (?<url>[^\s"\',]+))?/', $errorMessage, $matches)) {
+			return null;
+		}
+
+		$endpoint = isset($matches['url']) && $matches['url'] !== '' ? ': ' . $matches['url'] : '.';
+		return 'Timestamp Authority (TSA) rejected the request with HTTP status ' . $matches['status'] . $endpoint . "\n"
+			. 'The server was reached, so this is not a DNS/network/firewall problem.' . "\n"
+			. 'Check what the authority expects: hash algorithm, policy OID and authentication.';
 	}
 
 	private function checkHashAlgorithmError(string $errorMessage): void {
