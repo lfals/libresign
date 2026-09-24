@@ -68,23 +68,30 @@ jobs:
         include:
           - shard: account-admin
             paths: features/account features/admin features/bootstrap features/build
+            smtp_port: 1020
+            mail_ui_port: 8020
           - shard: file-notify
             paths: features/file features/identify-account features/notification
+            smtp_port: 1021
+            mail_ui_port: 8021
           - shard: page-policies
             paths: features/page features/policies features/settings
+            smtp_port: 1022
+            mail_ui_port: 8022
           - shard: sign
             paths: features/sign
+            smtp_port: 1023
+            mail_ui_port: 8023
 
     name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }} (${{ matrix.shard }})
 
     services:
       mailpit:
         image: axllent/mailpit
-        # Publish only the container port so Docker picks a free host port.
-        # Fixed binds collide under act (shared Docker host + matrix).
+        # act runs the job on host networking; unique ports avoid Bind collisions locally.
         ports:
-          - 8025/tcp
-          - 1025/tcp
+          - ${{ matrix.mail_ui_port }}:8025/tcp
+          - ${{ matrix.smtp_port }}:1025/tcp
 
     steps:
       - name: Set app env
@@ -140,14 +147,8 @@ jobs:
           composer --working-dir=tests/integration install
 
       - name: Set up Nextcloud
-        env:
-          SMTP_PORT: ${{ job.services.mailpit.ports[1025] }}
         run: |
-          if [ "${ACT}" = "true" ]; then
-            SMTP_PORT=1025
-          else
-            echo "127.0.0.1 mailpit" | sudo tee -a /etc/hosts
-          fi
+          sudo echo "127.0.0.1 mailpit" | sudo tee -a /etc/hosts
           mkdir data
           ./occ maintenance:install \
             --verbose \
@@ -173,7 +174,7 @@ jobs:
           ./occ config:system:set allow_local_remote_servers --value true --type boolean
           ./occ config:system:set auth.bruteforce.protection.enabled --value false --type boolean
           ./occ config:system:set mail_smtphost --value mailpit
-          ./occ config:system:set mail_smtpport --value "$SMTP_PORT" --type integer
+          ./occ config:system:set mail_smtpport --value ${{ matrix.smtp_port }} --type integer
           ./occ config:system:set ratelimit.protection.enabled --value false --type boolean
           ./occ config:app:set dav enableDefaultContact --value false --type boolean
 

@@ -71,30 +71,42 @@ jobs:
         include:
           - shard: account-admin
             paths: features/account features/admin features/bootstrap features/build
+            db_port: 4440
+            smtp_port: 1020
+            mail_ui_port: 8020
           - shard: file-notify
             paths: features/file features/identify-account features/notification
+            db_port: 4441
+            smtp_port: 1021
+            mail_ui_port: 8021
           - shard: page-policies
             paths: features/page features/policies features/settings
+            db_port: 4442
+            smtp_port: 1022
+            mail_ui_port: 8022
           - shard: sign
             paths: features/sign
+            db_port: 4443
+            smtp_port: 1023
+            mail_ui_port: 8023
 
     name: MySQL ${{ matrix.mysql-versions }} PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }} (${{ matrix.shard }})
 
     services:
       mysql:
         image: ghcr.io/nextcloud/continuous-integration-mysql-${{ matrix.mysql-versions }}:latest
-        # Publish only the container port so Docker picks a free host port.
-        # Fixed binds like 4444:3306 collide under act (shared Docker host + matrix).
+        # act runs the job on host networking, so services must be reached via 127.0.0.1.
+        # Unique matrix.db_port avoids Bind collisions when act expands the matrix locally.
         ports:
-          - 3306/tcp
+          - ${{ matrix.db_port }}:3306/tcp
         env:
           MYSQL_ROOT_PASSWORD: rootpassword
         options: --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -prootpassword" --health-interval 5s --health-timeout 2s --health-retries 10
       mailpit:
         image: axllent/mailpit
         ports:
-          - 8025/tcp
-          - 1025/tcp
+          - ${{ matrix.mail_ui_port }}:8025/tcp
+          - ${{ matrix.smtp_port }}:1025/tcp
 
     steps:
       - name: Set app env
@@ -135,17 +147,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable ONLY_FULL_GROUP_BY MySQL option
-        env:
-          DB_PORT: ${{ job.services.mysql.ports[3306] }}
         run: |
-          if [ "${ACT}" = "true" ]; then
-            DB_HOST=mysql
-            DB_PORT=3306
-          else
-            DB_HOST=127.0.0.1
-          fi
-          echo "SET GLOBAL sql_mode=(SELECT CONCAT(@@sql_mode,',ONLY_FULL_GROUP_BY'));" | mysql -h "$DB_HOST" -P "$DB_PORT" -u root -prootpassword
-          echo "SELECT @@sql_mode;" | mysql -h "$DB_HOST" -P "$DB_PORT" -u root -prootpassword
+          echo "SET GLOBAL sql_mode=(SELECT CONCAT(@@sql_mode,',ONLY_FULL_GROUP_BY'));" | mysql -h 127.0.0.1 -P ${{ matrix.db_port }} -u root -prootpassword
+          echo "SELECT @@sql_mode;" | mysql -h 127.0.0.1 -P ${{ matrix.db_port }} -u root -prootpassword
 
       - name: Check composer file existence
         id: check_composer
@@ -163,25 +167,15 @@ jobs:
           composer --working-dir=tests/integration install
 
       - name: Set up Nextcloud
-        env:
-          DB_PORT: ${{ job.services.mysql.ports[3306] }}
-          SMTP_PORT: ${{ job.services.mailpit.ports[1025] }}
         run: |
-          if [ "${ACT}" = "true" ]; then
-            DB_HOST=mysql
-            DB_PORT=3306
-            SMTP_PORT=1025
-          else
-            DB_HOST=127.0.0.1
-            echo "127.0.0.1 mailpit" | sudo tee -a /etc/hosts
-          fi
+          sudo echo "127.0.0.1 mailpit" | sudo tee -a /etc/hosts
           mkdir data
           ./occ maintenance:install \
             --verbose \
             --database=mysql \
             --database-name=nextcloud \
-            --database-host="$DB_HOST" \
-            --database-port="$DB_PORT" \
+            --database-host=127.0.0.1 \
+            --database-port=${{ matrix.db_port }} \
             --database-user=root \
             --database-pass=rootpassword \
             --admin-user admin \
@@ -200,7 +194,7 @@ jobs:
           ./occ config:system:set allow_local_remote_servers --value true --type boolean
           ./occ config:system:set auth.bruteforce.protection.enabled --value false --type boolean
           ./occ config:system:set mail_smtphost --value mailpit
-          ./occ config:system:set mail_smtpport --value "$SMTP_PORT" --type integer
+          ./occ config:system:set mail_smtpport --value ${{ matrix.smtp_port }} --type integer
           ./occ config:system:set ratelimit.protection.enabled --value false --type boolean
           ./occ config:app:set dav enableDefaultContact --value false --type boolean
 
