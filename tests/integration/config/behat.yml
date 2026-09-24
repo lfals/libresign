@@ -16,9 +16,8 @@ default:
       base_url: http://mailpit:8025
     PhpBuiltin\Server:
       runAs: www-data
-      # Keep >=2 so nested same-server HTTP (e.g. develop/pdf) cannot deadlock.
-      # Cap low: PHP_CLI_SERVER_WORKERS is experimental and high values amplify Empty-reply flakes.
-      workers: 2
+      # Temporary experiment: workers 0 (single-process php -S). Nested same-server HTTP may deadlock.
+      workers: 0
     jarnaiz\JUnitFormatter\JUnitFormatterExtension:
       filename: report.xml
       outputDir: '%paths.base%/../output/'

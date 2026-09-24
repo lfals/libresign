@@ -238,8 +238,8 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # Override PhpBuiltin workers; high PHP_CLI_SERVER_WORKERS correlates with Empty-reply crashes.
-          BEHAT_WORKERS: "2"
+          # Temporary experiment: single-process php -S (no PHP_CLI_SERVER_WORKERS).
+          BEHAT_WORKERS: "0"
           # Force IPv4 so php -S bind and Guzzle/cURL agree (avoids localhost → ::1 vs 127.0.0.1 mismatch).
           BEHAT_HOST: "127.0.0.1"
         run: |
@@ -258,7 +258,7 @@ jobs:
               BEHAT_RUN_AS=runner \
               BEHAT_ROOT_DIR=../../../../ \
               BEHAT_HOST=127.0.0.1 \
-              BEHAT_WORKERS=2 \
+              BEHAT_WORKERS=0 \
               BEHAT_VERBOSE=1 \
               HOME=/home/runner \
               PATH="$PATH" \
