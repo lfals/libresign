@@ -100,7 +100,19 @@ jobs:
           echo "APP_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y poppler-utils procps
+        run: |
+          # Ubuntu mirrors occasionally mid-sync under act ("unexpected size"); retry a few times.
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update; then
+              break
+            fi
+            echo "apt-get update failed (attempt ${attempt}/5); waiting before retry..."
+            sleep $((attempt * 5))
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+          done
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y poppler-utils procps
 
       - name: Checkout server
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -262,7 +274,11 @@ jobs:
         if: always()
         run: |
           echo "=== Behat web server processes ==="
-          ps aux | grep -E '[p]hp -S|[f]rankenphp' || echo "No Behat web server process"
+          if command -v ps >/dev/null 2>&1; then
+            ps aux | grep -E '[p]hp -S|[f]rankenphp' || echo "No Behat web server process"
+          else
+            echo "ps not installed (Install system dependencies may have failed earlier)"
+          fi
           echo "=== nextcloud.log (tail) ==="
           if [ -f data/nextcloud.log ]; then
             tail -n 80 data/nextcloud.log
