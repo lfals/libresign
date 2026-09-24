@@ -206,6 +206,10 @@ jobs:
           ./occ config:system:set mail_smtpport --value ${{ matrix.smtp_port }} --type integer
           ./occ config:system:set ratelimit.protection.enabled --value false --type boolean
           ./occ config:app:set dav enableDefaultContact --value false --type boolean
+          # Keep Host header and php -S bind on IPv4; localhost can resolve to ::1 only under Docker/act.
+          ./occ config:system:set trusted_domains 0 --value=localhost
+          ./occ config:system:set trusted_domains 1 --value=127.0.0.1
+          ./occ config:system:set overwrite.cli.url --value=http://127.0.0.1
 
       - name: Run behat
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
@@ -213,6 +217,8 @@ jobs:
           BEHAT_ROOT_DIR: ../../../../
           # Override PhpBuiltin workers; high PHP_CLI_SERVER_WORKERS correlates with Empty-reply crashes.
           BEHAT_WORKERS: "2"
+          # Force IPv4 so php -S bind and Guzzle/cURL agree (avoids localhost → ::1 vs 127.0.0.1 mismatch).
+          BEHAT_HOST: "127.0.0.1"
         run: |
           # act images often lack procps and a runner user; RunServerListener needs both.
           # FeatureContext also requires the Behat process UID to match BEHAT_RUN_AS / file owner.
@@ -228,6 +234,7 @@ jobs:
             runuser -u runner -- env -u GITHUB_ACTIONS \
               BEHAT_RUN_AS=runner \
               BEHAT_ROOT_DIR=../../../../ \
+              BEHAT_HOST=127.0.0.1 \
               BEHAT_WORKERS=2 \
               BEHAT_VERBOSE=1 \
               HOME=/home/runner \
@@ -235,6 +242,7 @@ jobs:
               vendor/bin/behat -f junit -f pretty --colors -v ${{ matrix.paths }}
           else
             export BEHAT_RUN_AS=runner
+            export BEHAT_HOST=127.0.0.1
             export BEHAT_VERBOSE="$RUNNER_DEBUG"
             # shellcheck disable=SC2086
             vendor/bin/behat -f junit -f pretty --colors ${{ matrix.paths }}
@@ -243,7 +251,14 @@ jobs:
       - name: Print logs
         if: always()
         run: |
-          cat data/nextcloud.log 2>/dev/null || echo "No nextcloud.log yet"
+          echo "=== php -S processes ==="
+          ps aux | grep -E '[p]hp -S' || echo "No php -S process"
+          echo "=== nextcloud.log (tail) ==="
+          if [ -f data/nextcloud.log ]; then
+            tail -n 80 data/nextcloud.log
+          else
+            echo "No nextcloud.log yet"
+          fi
 
   summary:
     permissions:
