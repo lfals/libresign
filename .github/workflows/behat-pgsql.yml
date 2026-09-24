@@ -59,11 +59,21 @@ jobs:
     if: needs.changes.outputs.src != 'false'
 
     strategy:
+      fail-fast: false
       matrix:
         php-versions: ${{ fromJson(needs.matrix.outputs.php-version) }}
         server-versions: ${{ fromJson(needs.matrix.outputs.server-max) }}
+        shard:
+          - name: account-admin
+            paths: features/account features/admin features/bootstrap features/build
+          - name: file-notify
+            paths: features/file features/identify-account features/notification
+          - name: page-policies
+            paths: features/page features/policies features/settings
+          - name: sign
+            paths: features/sign
 
-    name: PostgreSQL PHP ${{ matrix.mysql-versions }} PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }}
+    name: PostgreSQL PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }} (${{ matrix.shard.name }})
 
     services:
       postgres:
@@ -175,7 +185,8 @@ jobs:
         run: |
           export BEHAT_RUN_AS=runner
           export BEHAT_VERBOSE="$RUNNER_DEBUG"
-          vendor/bin/behat -f junit -f pretty --colors
+          # shellcheck disable=SC2086
+          vendor/bin/behat -f junit -f pretty --colors ${{ matrix.shard.paths }}
 
       - name: Print logs
         if: always()
