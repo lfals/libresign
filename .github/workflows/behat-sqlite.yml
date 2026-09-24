@@ -89,7 +89,7 @@ jobs:
           echo "APP_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt update && sudo apt install poppler-utils
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y poppler-utils
 
       - name: Checkout server
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
