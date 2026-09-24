@@ -228,7 +228,7 @@ jobs:
       - name: Print logs
         if: always()
         run: |
-          cat data/nextcloud.log
+          cat data/nextcloud.log 2>/dev/null || echo "No nextcloud.log yet"
 
   summary:
     permissions:
