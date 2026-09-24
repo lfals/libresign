@@ -114,7 +114,7 @@ jobs:
           echo "APP_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y poppler-utils
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y poppler-utils procps
 
       - name: Checkout server
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -212,6 +212,12 @@ jobs:
         env:
           BEHAT_ROOT_DIR: ../../../../
         run: |
+          # act images often lack procps and a runner user; RunServerListener needs both.
+          if [ "${ACT}" = "true" ]; then
+            id -u runner >/dev/null 2>&1 || useradd -m -s /bin/bash runner
+            NC_ROOT="$(cd ../../../.. && pwd)"
+            chown -R runner:runner "$NC_ROOT"
+          fi
           export BEHAT_RUN_AS=runner
           export BEHAT_VERBOSE="$RUNNER_DEBUG"
           # shellcheck disable=SC2086
