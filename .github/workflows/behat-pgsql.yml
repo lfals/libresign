@@ -131,6 +131,21 @@ jobs:
           submodules: true
           path: apps/${{ env.APP_NAME }}
 
+      # act often copies the worktree without initializing gitlinks; composer classmap needs 3rdparty/composer.
+      - name: Ensure LibreSign 3rdparty is present
+        working-directory: apps/${{ env.APP_NAME }}
+        run: |
+          if [ -d 3rdparty/composer ]; then
+            echo "3rdparty already present"
+            exit 0
+          fi
+          THIRDPARTY_SHA="$(git rev-parse HEAD:3rdparty 2>/dev/null || true)"
+          rm -rf 3rdparty
+          git clone https://github.com/LibreSign/3rdparty.git 3rdparty
+          if [ -n "$THIRDPARTY_SHA" ]; then
+            git -C 3rdparty checkout --force "$THIRDPARTY_SHA"
+          fi
+
       - name: Set up php ${{ matrix.php-versions }}
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
