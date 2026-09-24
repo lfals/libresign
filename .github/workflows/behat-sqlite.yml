@@ -63,24 +63,28 @@ jobs:
       matrix:
         php-versions: ${{ fromJson(needs.matrix.outputs.php-version) }}
         server-versions: ${{ fromJson(needs.matrix.outputs.server-max) }}
-        shard:
-          - name: account-admin
+        # Flat shard key so `act --matrix shard:sign` can select a single cell.
+        shard: [account-admin, file-notify, page-policies, sign]
+        include:
+          - shard: account-admin
             paths: features/account features/admin features/bootstrap features/build
-          - name: file-notify
+          - shard: file-notify
             paths: features/file features/identify-account features/notification
-          - name: page-policies
+          - shard: page-policies
             paths: features/page features/policies features/settings
-          - name: sign
+          - shard: sign
             paths: features/sign
 
-    name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }} (${{ matrix.shard.name }})
+    name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }} (${{ matrix.shard }})
 
     services:
       mailpit:
         image: axllent/mailpit
+        # Publish only the container port so Docker picks a free host port.
+        # Fixed binds collide under act (shared Docker host + matrix).
         ports:
-          - 8025:8025/tcp
-          - 1025:1025/tcp
+          - 8025/tcp
+          - 1025/tcp
 
     steps:
       - name: Set app env
@@ -137,16 +141,20 @@ jobs:
 
       - name: Set up Nextcloud
         env:
-          DB_PORT: 4444
+          SMTP_PORT: ${{ job.services.mailpit.ports[1025] }}
         run: |
-          sudo echo "127.0.0.1 mailpit" | sudo tee -a /etc/hosts
+          if [ "${ACT}" = "true" ]; then
+            SMTP_PORT=1025
+          else
+            echo "127.0.0.1 mailpit" | sudo tee -a /etc/hosts
+          fi
           mkdir data
           ./occ maintenance:install \
             --verbose \
             --database=sqlite \
             --database-name=nextcloud \
             --database-host=127.0.0.1 \
-            --database-port=$DB_PORT \
+            --database-port=4444 \
             --database-user=root \
             --database-pass=rootpassword \
             --admin-user admin \
@@ -165,7 +173,7 @@ jobs:
           ./occ config:system:set allow_local_remote_servers --value true --type boolean
           ./occ config:system:set auth.bruteforce.protection.enabled --value false --type boolean
           ./occ config:system:set mail_smtphost --value mailpit
-          ./occ config:system:set mail_smtpport --value 1025 --type integer
+          ./occ config:system:set mail_smtpport --value "$SMTP_PORT" --type integer
           ./occ config:system:set ratelimit.protection.enabled --value false --type boolean
           ./occ config:app:set dav enableDefaultContact --value false --type boolean
 
@@ -177,7 +185,7 @@ jobs:
           export BEHAT_RUN_AS=runner
           export BEHAT_VERBOSE="$RUNNER_DEBUG"
           # shellcheck disable=SC2086
-          vendor/bin/behat -f junit -f pretty --colors ${{ matrix.shard.paths }}
+          vendor/bin/behat -f junit -f pretty --colors ${{ matrix.paths }}
 
       - name: Print logs
         if: always()
