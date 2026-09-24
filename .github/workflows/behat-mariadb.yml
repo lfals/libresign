@@ -238,11 +238,14 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # Temporary experiment: single-process php -S (no PHP_CLI_SERVER_WORKERS).
           BEHAT_WORKERS: "0"
-          # Force IPv4 so php -S bind and Guzzle/cURL agree (avoids localhost → ::1 vs 127.0.0.1 mismatch).
+          # Force IPv4 so server bind and Guzzle/cURL agree (avoids localhost → ::1 mismatch).
           BEHAT_HOST: "127.0.0.1"
         run: |
+          # Replace PhpBuiltin's php -S with FrankenPHP for this Behat job only.
+          WRAP_BIN="$(./bin/ci-setup-frankenphp-behat-server.sh)"
+          export PATH="$WRAP_BIN:$PATH"
+          hash -r 2>/dev/null || true
           # act images often lack procps and a runner user; RunServerListener needs both.
           # FeatureContext also requires the Behat process UID to match BEHAT_RUN_AS / file owner.
           if [ "${ACT}" = "true" ]; then
@@ -252,7 +255,7 @@ jobs:
             # Under act (host networking) Mailpit is published on matrix.mail_ui_port, not :8025.
             sed -i.bak "s|base_url: http://mailpit:8025|base_url: http://127.0.0.1:${{ matrix.mail_ui_port }}|" config/behat.yml
             # shellcheck disable=SC2086
-            # Drop GITHUB_ACTIONS so RunServerListener does not wrap php -S in sudo
+            # Drop GITHUB_ACTIONS so RunServerListener does not wrap the server start in sudo
             # (behat already runs as runner; act's runner user has no passwordless sudo).
             runuser -u runner -- env -u GITHUB_ACTIONS \
               BEHAT_RUN_AS=runner \
@@ -274,8 +277,8 @@ jobs:
       - name: Print logs
         if: always()
         run: |
-          echo "=== php -S processes ==="
-          ps aux | grep -E '[p]hp -S' || echo "No php -S process"
+          echo "=== Behat web server processes ==="
+          ps aux | grep -E '[p]hp -S|[f]rankenphp' || echo "No Behat web server process"
           echo "=== nextcloud.log (tail) ==="
           if [ -f data/nextcloud.log ]; then
             tail -n 80 data/nextcloud.log
