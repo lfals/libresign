@@ -211,6 +211,8 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
+          # Override PhpBuiltin workers; high PHP_CLI_SERVER_WORKERS correlates with Empty-reply crashes.
+          BEHAT_WORKERS: "2"
         run: |
           # act images often lack procps and a runner user; RunServerListener needs both.
           # FeatureContext also requires the Behat process UID to match BEHAT_RUN_AS / file owner.
@@ -218,15 +220,19 @@ jobs:
             id -u runner >/dev/null 2>&1 || useradd -m -s /bin/bash runner
             NC_ROOT="$(cd ../../../.. && pwd)"
             chown -R runner:runner "$NC_ROOT"
+            # Under act (host networking) Mailpit is published on matrix.mail_ui_port, not :8025.
+            sed -i.bak "s|base_url: http://mailpit:8025|base_url: http://127.0.0.1:${{ matrix.mail_ui_port }}|" config/behat.yml
             # shellcheck disable=SC2086
             # Drop GITHUB_ACTIONS so RunServerListener does not wrap php -S in sudo
             # (behat already runs as runner; act's runner user has no passwordless sudo).
             runuser -u runner -- env -u GITHUB_ACTIONS \
               BEHAT_RUN_AS=runner \
               BEHAT_ROOT_DIR=../../../../ \
-              BEHAT_VERBOSE="${RUNNER_DEBUG:-}" \
+              BEHAT_WORKERS=2 \
+              BEHAT_VERBOSE=1 \
               HOME=/home/runner \
-              vendor/bin/behat -f junit -f pretty --colors ${{ matrix.paths }}
+              PATH="$PATH" \
+              vendor/bin/behat -f junit -f pretty --colors -v ${{ matrix.paths }}
           else
             export BEHAT_RUN_AS=runner
             export BEHAT_VERBOSE="$RUNNER_DEBUG"
