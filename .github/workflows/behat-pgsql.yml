@@ -202,11 +202,22 @@ jobs:
           ./occ app:enable --force guests
           ./occ config:system:set allow_local_remote_servers --value true --type boolean
           ./occ config:system:set auth.bruteforce.protection.enabled --value false --type boolean
-          ./occ config:system:set mail_smtphost --value mailpit
-          ./occ config:system:set mail_smtpport --value ${{ matrix.smtp_port }} --type integer
+          # SMTP: GHA reaches the service on container port 1025; act (host network) uses the published host port.
+          ./occ config:system:set mail_smtpmode --value smtp
+          ./occ config:system:set mail_sendmailmode --value smtp
+          ./occ config:system:set mail_smtpauth --value false --type boolean
+          ./occ config:system:set mail_from_address --value noreply
+          ./occ config:system:set mail_domain --value example.com
+          if [ "${ACT}" = "true" ]; then
+            ./occ config:system:set mail_smtphost --value 127.0.0.1
+            ./occ config:system:set mail_smtpport --value ${{ matrix.smtp_port }} --type integer
+          else
+            ./occ config:system:set mail_smtphost --value mailpit
+            ./occ config:system:set mail_smtpport --value 1025 --type integer
+          fi
           ./occ config:system:set ratelimit.protection.enabled --value false --type boolean
           ./occ config:app:set dav enableDefaultContact --value false --type boolean
-          # Keep Host header and php -S bind on IPv4; localhost can resolve to ::1 only under Docker/act.
+          # Keep Host header and server bind on IPv4; localhost can resolve to ::1 only under Docker/act.
           ./occ config:system:set trusted_domains 0 --value=localhost
           ./occ config:system:set trusted_domains 1 --value=127.0.0.1
           ./occ config:system:set overwrite.cli.url --value=http://127.0.0.1
@@ -231,6 +242,16 @@ jobs:
             chown -R runner:runner "$NC_ROOT"
             # Under act (host networking) Mailpit is published on matrix.mail_ui_port, not :8025.
             sed -i.bak "s|base_url: http://mailpit:8025|base_url: http://127.0.0.1:${{ matrix.mail_ui_port }}|" config/behat.yml
+            echo "Mailpit API preflight:"
+            curl -fsS "http://127.0.0.1:${{ matrix.mail_ui_port }}/api/v1/info" || {
+              echo "Mailpit UI not reachable on 127.0.0.1:${{ matrix.mail_ui_port }}"
+              exit 1
+            }
+            echo "Mailpit SMTP preflight:"
+            timeout 3 bash -c "echo >/dev/tcp/127.0.0.1/${{ matrix.smtp_port }}" || {
+              echo "Mailpit SMTP not reachable on 127.0.0.1:${{ matrix.smtp_port }}"
+              exit 1
+            }
             # shellcheck disable=SC2086
             # Drop GITHUB_ACTIONS so RunServerListener does not wrap the server start in sudo
             # (behat already runs as runner; act's runner user has no passwordless sudo).
