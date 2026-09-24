@@ -236,15 +236,26 @@ jobs:
           BEHAT_ROOT_DIR: ../../../../
         run: |
           # act images often lack procps and a runner user; RunServerListener needs both.
+          # FeatureContext also requires the Behat process UID to match BEHAT_RUN_AS / file owner.
           if [ "${ACT}" = "true" ]; then
             id -u runner >/dev/null 2>&1 || useradd -m -s /bin/bash runner
             NC_ROOT="$(cd ../../../.. && pwd)"
             chown -R runner:runner "$NC_ROOT"
+            # shellcheck disable=SC2086
+            # Drop GITHUB_ACTIONS so RunServerListener does not wrap php -S in sudo
+            # (behat already runs as runner; act's runner user has no passwordless sudo).
+            runuser -u runner -- env -u GITHUB_ACTIONS \
+              BEHAT_RUN_AS=runner \
+              BEHAT_ROOT_DIR=../../../../ \
+              BEHAT_VERBOSE="${RUNNER_DEBUG:-}" \
+              HOME=/home/runner \
+              vendor/bin/behat -f junit -f pretty --colors ${{ matrix.paths }}
+          else
+            export BEHAT_RUN_AS=runner
+            export BEHAT_VERBOSE="$RUNNER_DEBUG"
+            # shellcheck disable=SC2086
+            vendor/bin/behat -f junit -f pretty --colors ${{ matrix.paths }}
           fi
-          export BEHAT_RUN_AS=runner
-          export BEHAT_VERBOSE="$RUNNER_DEBUG"
-          # shellcheck disable=SC2086
-          vendor/bin/behat -f junit -f pretty --colors ${{ matrix.paths }}
 
       - name: Print logs
         if: always()
