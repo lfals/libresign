@@ -190,8 +190,8 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # Temporary experiment: single-process php -S (no PHP_CLI_SERVER_WORKERS).
-          BEHAT_WORKERS: "0"
+          # Keep >=2 so nested same-server HTTP (e.g. develop/pdf) cannot deadlock.
+          BEHAT_WORKERS: "2"
         run: |
           export BEHAT_RUN_AS=runner
           export BEHAT_VERBOSE="$RUNNER_DEBUG"
