@@ -167,8 +167,8 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # Probe: real php -S + workers 2. FrankenPHP hid cURL 52.
-          BEHAT_WORKERS: "2"
+          # Probe: real php -S + original workers 10. FrankenPHP hid cURL 52.
+          BEHAT_WORKERS: "10"
           BEHAT_HOST: "127.0.0.1"
           # Capture worker PID, accept/close, and unexpected-death diagnostics.
           BEHAT_VERBOSE: "1"

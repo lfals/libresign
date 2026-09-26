@@ -16,9 +16,7 @@ default:
       base_url: http://mailpit:8025
     PhpBuiltin\Server:
       runAs: www-data
-      # Local default. CI probe uses the real php -S with BEHAT_WORKERS=2 and BEHAT_VERBOSE=1.
-      # Keep >=2 so nested same-server HTTP (e.g. develop/pdf) cannot deadlock.
-      workers: 2
+      workers: 10
     jarnaiz\JUnitFormatter\JUnitFormatterExtension:
       filename: report.xml
       outputDir: '%paths.base%/../output/'
