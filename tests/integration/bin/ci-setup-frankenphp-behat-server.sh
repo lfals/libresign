@@ -4,6 +4,8 @@
 #
 # Install FrankenPHP and put a `php` wrapper earlier on PATH so
 # PhpBuiltin\RunServerListener's `php -S` becomes FrankenPHP php-server.
+# Only Nextcloud document roots are rewritten. TSA mock and fixture
+# servers keep the real php -S (they need a router or static files).
 # CLI php (occ, behat) still uses setup-php via php.real.
 # Prints the wrapper bin directory to stdout (prepend to PATH).
 set -euo pipefail
@@ -41,29 +43,44 @@ cat >"$DEST/bin/php" <<'WRAP'
 # SPDX-FileCopyrightText: 2026 LibreCode coop and contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
+REAL="$(dirname "$0")/php.real"
 if [[ "${1:-}" == "-S" ]]; then
 	LISTEN="${2:?php -S requires host:port}"
 	ROOT="."
-	shift 2
-	while [[ $# -gt 0 ]]; do
-		case "$1" in
+	ROUTER=""
+	i=3
+	while [[ $i -le $# ]]; do
+		arg="${!i}"
+		case "$arg" in
 			-t)
-				ROOT="${2:?}"
-				shift 2
+				next=$((i + 1))
+				ROOT="${!next:?}"
+				i=$((i + 2))
+				;;
+			-*)
+				i=$((i + 1))
 				;;
 			*)
-				shift
+				ROUTER="$arg"
+				i=$((i + 1))
 				;;
 		esac
 	done
-	# escapeshellarg() may quote the document root
+	# escapeshellarg() may quote the document root or router path
 	ROOT="${ROOT#\'}"
 	ROOT="${ROOT%\'}"
+	ROUTER="${ROUTER#\'}"
+	ROUTER="${ROUTER%\'}"
+	# TSA: php -S host:port -t $workDir $router.php — keep built-in server.
+	# Fixtures: php -S host:port -t $pdfDir — no occ, keep built-in server.
+	if [[ -n "$ROUTER" || ! -f "$ROOT/occ" || ! -f "$ROOT/lib/base.php" ]]; then
+		exec "$REAL" "$@"
+	fi
 	FRANKENPHP="$(cd "$(dirname "$0")/.." && pwd)/frankenphp"
 	# Keep argv0 looking like php -S so leftover-process scans still match.
 	exec -a "php -S ${LISTEN}" "$FRANKENPHP" php-server --listen="$LISTEN" --root="$ROOT"
 fi
-exec "$(dirname "$0")/php.real" "$@"
+exec "$REAL" "$@"
 WRAP
 chmod +x "$DEST/bin/php"
 
