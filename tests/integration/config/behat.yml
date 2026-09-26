@@ -16,7 +16,9 @@ default:
       base_url: http://mailpit:8025
     PhpBuiltin\Server:
       runAs: www-data
-      workers: 10
+      # Temporary experiment: single-process php -S (no PHP_CLI_SERVER_WORKERS).
+      # Nested same-server HTTP may deadlock without workers >= 2.
+      workers: 0
     jarnaiz\JUnitFormatter\JUnitFormatterExtension:
       filename: report.xml
       outputDir: '%paths.base%/../output/'
