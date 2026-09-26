@@ -178,12 +178,17 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # SIGSEGV probe: keep JIT on, raise hit rate on the crashing path.
-          BEHAT_VERBOSE: "1"
+          # php -S workers SIGSEGV in zend_objects_store_del (JIT). FrankenPHP
+          # php-server has no worker fork; TSA/fixtures still use real php -S.
+          BEHAT_WORKERS: "0"
           BEHAT_HOST: "127.0.0.1"
         run: |
+          WRAP_BIN="$(./bin/ci-setup-frankenphp-behat-server.sh)"
+          export PATH="$WRAP_BIN:$PATH"
+          hash -r 2>/dev/null || true
           export BEHAT_RUN_AS=runner
-          vendor/bin/behat -v -f junit -f pretty --colors features/sign
+          export BEHAT_VERBOSE="$RUNNER_DEBUG"
+          vendor/bin/behat -f junit -f pretty --colors
 
       - name: Print logs
         if: always()
