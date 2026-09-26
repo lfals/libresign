@@ -208,9 +208,7 @@ jobs:
         run: if ${{ needs.changes.outputs.src != 'false' && needs.phpunit-sqlite.result != 'success' }}; then exit 1; fi
 
   finish-coverage:
-    # Coveralls is wired to LibreSign/libresign. On forks the parallel-done
-    # webhook returns 500 and would fail an otherwise green PHPUnit run.
-    if: ${{ github.event.pull_request.base.ref == 'main' && github.repository == 'LibreSign/libresign' }}
+    if: ${{ github.event.pull_request.base.ref == 'main' }}
     needs: phpunit-sqlite
     runs-on: ubuntu-latest
     steps:
