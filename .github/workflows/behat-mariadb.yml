@@ -85,7 +85,7 @@ jobs:
           echo "APP_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt update && sudo apt install poppler-utils
+        run: sudo apt update && sudo apt install poppler-utils gdb systemd-coredump
 
       - name: Checkout server
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -166,15 +166,45 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
+          # SIGSEGV probe: keep JIT on, raise hit rate on the crashing path.
+          BEHAT_VERBOSE: "1"
+          BEHAT_HOST: "127.0.0.1"
         run: |
           export BEHAT_RUN_AS=runner
-          export BEHAT_VERBOSE="$RUNNER_DEBUG"
-          vendor/bin/behat -f junit -f pretty --colors
+          vendor/bin/behat -v -f junit -f pretty --colors features/sign
 
       - name: Print logs
         if: always()
         run: |
+          echo "=== php -S diagnostics ==="
+          shopt -s nullglob
+          files=(/tmp/behat-php-server-*)
+          if (( ${#files[@]} )); then
+            ls -la "${files[@]}"
+            for f in "${files[@]}"; do
+              echo "----- $f -----"
+              cat "$f"
+            done
+          else
+            echo "No /tmp/behat-php-server-* files"
+          fi
+          echo "=== nextcloud.log ==="
           cat data/nextcloud.log
+
+      - name: Backtrace PHP core dumps
+        if: failure()
+        working-directory: apps/${{ env.APP_NAME }}
+        run: tests/integration/bin/ci-dump-php-s-core.sh
+
+      - name: Upload PHP server diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: behat-mariadb-php-s-core-${{ matrix.mariadb-versions }}-php${{ matrix.php-versions }}-nc${{ matrix.server-versions }}
+          path: |
+            /tmp/behat-php-server-*
+            /tmp/php-s-gdb-bt.txt
+          if-no-files-found: ignore
 
   summary:
     permissions:
