@@ -21,12 +21,15 @@ use OCA\Libresign\Service\Policy\Provider\IdentificationDocuments\Identification
 use OCA\Libresign\Service\Policy\Provider\IdentifyMethods\IdentifyMethodsPolicy;
 use OCA\Libresign\Service\Policy\Provider\LegalInformation\LegalInformationPolicy;
 use OCA\Libresign\Service\Policy\Provider\MailSenderStrategy\MailSenderStrategyPolicy;
+use OCA\Libresign\Service\Policy\Provider\ObserverProfile\ObserverProfilePolicy;
 use OCA\Libresign\Service\Policy\Provider\Reminder\ReminderPolicy;
 use OCA\Libresign\Service\Policy\Provider\RequestSignGroups\RequestSignGroupsPolicy;
 use OCA\Libresign\Service\Policy\Provider\Signature\SignatureFlowPolicy;
 use OCA\Libresign\Service\Policy\Provider\SignatureHashAlgorithm\SignatureHashAlgorithmPolicy;
+use OCA\Libresign\Service\Policy\Provider\SignatureRejection\SignatureRejectionPolicy;
 use OCA\Libresign\Service\Policy\Provider\SignatureText\SignatureTextPolicy;
 use OCA\Libresign\Service\Policy\Provider\SignerGeolocation\SignerGeolocationPolicy;
+use OCA\Libresign\Service\Policy\Provider\SignerIpGeolocation\SignerIpGeolocationPolicy;
 use OCA\Libresign\Service\Policy\Provider\Tsa\TsaPolicy;
 use OCA\Libresign\Service\Policy\Provider\ValidationAccess\ValidationAccessPolicy;
 use OCA\Libresign\Service\Policy\Provider\Worker\SigningModePolicy;
@@ -51,14 +54,21 @@ final class PolicyProviders {
 		LegalInformationPolicy::KEY => LegalInformationPolicy::class,
 		MailSenderStrategyPolicy::KEY => MailSenderStrategyPolicy::class,
 		SignatureHashAlgorithmPolicy::KEY => SignatureHashAlgorithmPolicy::class,
+		SignatureRejectionPolicy::KEY_ENABLED => SignatureRejectionPolicy::class,
+		SignatureRejectionPolicy::KEY_BEHAVIOR => SignatureRejectionPolicy::class,
+		SignatureRejectionPolicy::KEY_COMMENT_MODE => SignatureRejectionPolicy::class,
+		SignatureRejectionPolicy::KEY_VISIBILITY => SignatureRejectionPolicy::class,
+		SignatureRejectionPolicy::KEY_COMMENT_VISIBILITY => SignatureRejectionPolicy::class,
 		ValidationAccessPolicy::KEY => ValidationAccessPolicy::class,
 		SignatureFlowPolicy::KEY => SignatureFlowPolicy::class,
 		SigningModePolicy::KEY_SIGNING_MODE => SigningModePolicy::class,
 		WorkerConfigPolicy::KEY => WorkerConfigPolicy::class,
 		IdentificationDocumentsPolicy::KEY => IdentificationDocumentsPolicy::class,
 		IdentifyMethodsPolicy::KEY => IdentifyMethodsPolicy::class,
+		ObserverProfilePolicy::KEY => ObserverProfilePolicy::class,
 		SignatureTextPolicy::KEY => SignatureTextPolicy::class,
 		SignerGeolocationPolicy::KEY => SignerGeolocationPolicy::class,
+		SignerIpGeolocationPolicy::KEY => SignerIpGeolocationPolicy::class,
 		TsaPolicy::KEY => TsaPolicy::class,
 	];
 }

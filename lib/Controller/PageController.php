@@ -14,8 +14,8 @@ use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
 use OCA\Libresign\Helper\JSActions;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Middleware\Attribute\PrivateValidation;
+use OCA\Libresign\Middleware\Attribute\RequireParticipantUuid;
 use OCA\Libresign\Middleware\Attribute\RequireSetupOk;
 use OCA\Libresign\Middleware\Attribute\RequireSignRequestUuid;
 use OCA\Libresign\Service\AccountService;
@@ -29,6 +29,7 @@ use OCA\Libresign\Service\RequestSignatureService;
 use OCA\Libresign\Service\SessionService;
 use OCA\Libresign\Service\SignerElementsService;
 use OCA\Libresign\Service\SignFileService;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCA\Viewer\Event\LoadViewer;
 use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Http;
@@ -75,7 +76,7 @@ class PageController extends AEnvironmentPageAwareController {
 		private FileMapper $fileMapper,
 		private SignRequestMapper $signRequestMapper,
 		private LoggerInterface $logger,
-		private ValidateHelper $validateHelper,
+		private SigningRequestValidator $signingRequestValidator,
 		private IEventDispatcher $eventDispatcher,
 		private IURLGenerator $urlGenerator,
 	) {
@@ -105,7 +106,7 @@ class PageController extends AEnvironmentPageAwareController {
 		$this->initialState->provideInitialState('certificate_engine', $this->accountService->getCertificateEngineName());
 
 		try {
-			$this->validateHelper->canRequestSign($this->userSession->getUser());
+			$this->signingRequestValidator->canRequestSign($this->userSession->getUser());
 			$this->initialState->provideInitialState('can_request_sign', true);
 		} catch (LibresignException) {
 			$this->initialState->provideInitialState('can_request_sign', false);
@@ -523,7 +524,7 @@ class PageController extends AEnvironmentPageAwareController {
 	#[PrivateValidation(allowValidSignRequestUuid: true)]
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
-	#[RequireSignRequestUuid(allowIdDocs: true)]
+	#[RequireParticipantUuid(allowIdDocs: true)]
 	#[PublicPage]
 	#[RequireSetupOk]
 	#[AnonRateLimit(limit: 300, period: 60)]
@@ -552,7 +553,7 @@ class PageController extends AEnvironmentPageAwareController {
 	#[PrivateValidation(allowValidSignRequestUuid: false)]
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
-	#[RequireSetupOk(template: 'validation')]
+	#[RequireSetupOk(template: 'external')]
 	#[PublicPage]
 	#[AnonRateLimit(limit: 30, period: 60)]
 	#[FrontpageRoute(verb: 'GET', url: '/p/validation')]
@@ -577,7 +578,7 @@ class PageController extends AEnvironmentPageAwareController {
 
 		Util::addScript(Application::APP_ID, 'libresign-validation');
 		Util::addStyle(Application::APP_ID, 'libresign-validation');
-		$response = new TemplateResponse(Application::APP_ID, 'validation', [], TemplateResponse::RENDER_AS_BASE);
+		$response = new TemplateResponse(Application::APP_ID, 'external', [], TemplateResponse::RENDER_AS_BASE);
 
 		return $response;
 	}
@@ -703,10 +704,11 @@ class PageController extends AEnvironmentPageAwareController {
 		$this->initialState->provideInitialState('file_info', $fileInfo);
 
 		Util::addScript(Application::APP_ID, 'libresign-validation');
+		Util::addStyle(Application::APP_ID, 'libresign-validation');
 		if (class_exists(LoadViewer::class)) {
 			$this->eventDispatcher->dispatchTyped(new LoadViewer());
 		}
-		$response = new TemplateResponse(Application::APP_ID, 'validation', [], TemplateResponse::RENDER_AS_BASE);
+		$response = new TemplateResponse(Application::APP_ID, 'external', [], TemplateResponse::RENDER_AS_BASE);
 
 		return $response;
 	}

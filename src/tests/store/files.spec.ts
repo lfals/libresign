@@ -833,6 +833,21 @@ describe('files store - critical business rules', () => {
 			expect(store.isPartialSigned()).toBe(true)
 			expect(store.isFullSigned()).toBe(false)
 		})
+
+		it('treats fully signed signers as complete even with unsigned observers', () => {
+			const store = useFilesStore()
+			store.selectedFileId = 1
+			store.files[1] = {
+				id: 1,
+				signers: [
+					{ signed: ['sig1'], participantRole: 'signer' },
+					{ signed: [], participantRole: 'observer', status: 4 },
+				],
+			}
+
+			expect(store.isFullSigned()).toBe(true)
+			expect(store.isPartialSigned()).toBe(true)
+		})
 	})
 
 	describe('RULE: signing permission with deleted file', () => {
@@ -846,6 +861,23 @@ describe('files store - critical business rules', () => {
 				metadata: { original_file_deleted: true },
 			}
 
+			expect(store.canSign()).toBe(false)
+		})
+
+		it('blocks signing when the current user is only an observer', () => {
+			const store = useFilesStore()
+			store.selectedFileId = 1
+			store.files[1] = {
+				id: 1,
+				status: 1,
+				canSign: true,
+				signers: [
+					{ me: true, signed: [], participantRole: 'observer', sign_request_uuid: 'observer-uuid' },
+					{ me: false, signed: [], participantRole: 'signer', sign_request_uuid: 'signer-uuid' },
+				],
+			}
+
+			expect(store.isObservingOnly()).toBe(true)
 			expect(store.canSign()).toBe(false)
 		})
 	})
@@ -1201,6 +1233,7 @@ describe('files store - critical business rules', () => {
 						description: 'Needs review',
 						notify: 0,
 						status: 1,
+						deviceGeolocationRequired: true,
 						localKey: 'draft-signer:1',
 						statusText: 'Draft',
 						me: true,
@@ -1221,6 +1254,34 @@ describe('files store - critical business rules', () => {
 					description: 'Needs review',
 					notify: 0,
 					status: 1,
+					deviceGeolocationRequired: true,
+				}])
+			})
+
+			it('rehydrates deviceGeolocationRequired from frozen signer metadata', async () => {
+				const store = useFilesStore()
+				store.selectedFileId = 1
+				store.files[1] = {
+					id: 1,
+					name: 'contract.pdf',
+					signatureFlow: 'parallel',
+					signers: [{
+						identifyMethods: [{ method: 'email', value: 'signer@example.com', requirement: 'optional' }],
+						metadata: { deviceGeolocationRequirement: 'required' },
+						localKey: 'draft-signer:1',
+						statusText: 'Draft',
+					}],
+				}
+				axiosMock.mockResolvedValue({
+					data: { ocs: { data: { id: 1, nodeId: 99, signatureFlow: 'parallel', signers: [] } } },
+				})
+
+				await store.saveOrUpdateSignatureRequest({ status: 1 })
+
+				const config = axiosMock.mock.calls[0][0]
+				expect(config.data.signers).toEqual([{
+					identifyMethods: [{ method: 'email', value: 'signer@example.com', requirement: 'optional' }],
+					deviceGeolocationRequired: true,
 				}])
 			})
 
@@ -1491,6 +1552,79 @@ describe('files store - critical business rules', () => {
 
 				const config = axiosMock.mock.calls[0][0]
 				expect(config.data.file).toEqual({ nodeId })
+			})
+
+			/**
+			 * Regression #8363: `@nextcloud/files` exposes `Node.id` as a string and
+			 * the Files sidebar hands it to AppFilesTab as is (a file copied in the
+			 * Files app, or any node id above Number.MAX_SAFE_INTEGER). The store
+			 * keeps it as nodeId; the request must carry it unchanged instead of
+			 * dropping the whole "file" (422 "File or files parameter is required").
+			 */
+			it('includes file.nodeId as the string the Files sidebar provided', async () => {
+				const store = useFilesStore()
+				const nodeId = '9007199254740993'
+				const tempId = -Number(nodeId)
+				store.files[tempId] = {
+					id: tempId,
+					nodeId,
+					name: 'copy of contract.pdf',
+					signers: [{ email: 'signer@example.com', identifyMethods: [{ method: 'email', value: 'signer@example.com', requirement: 'optional' }] }],
+					signatureFlow: 'parallel',
+				}
+				store.selectedFileId = tempId
+
+				axiosMock.mockResolvedValue({
+					data: { ocs: { data: { id: 77, nodeId: 77, signatureFlow: 'parallel', signers: [] } } },
+				})
+
+				await store.saveOrUpdateSignatureRequest({})
+
+				const config = axiosMock.mock.calls[0][0]
+				expect(config.data.file).toEqual({ nodeId: '9007199254740993' })
+			})
+
+			it('serializes envelope files with string and number node ids as they are', async () => {
+				const store = useFilesStore()
+				store.selectedFileId = -1
+				store.files[-1] = {
+					id: -1,
+					name: 'Envelope',
+					files: [
+						{ id: -7, nodeId: '9007199254740993', name: 'first.pdf' },
+						{ id: -22, nodeId: 22, name: 'second.pdf' },
+					],
+					signers: [{ email: 'signer@example.com' }],
+					signatureFlow: 'parallel',
+				}
+				axiosMock.mockResolvedValue({
+					data: { ocs: { data: { id: 12, nodeId: 'real-node', signatureFlow: 'parallel', signers: [] } } },
+				})
+
+				await store.saveOrUpdateSignatureRequest({})
+
+				const config = axiosMock.mock.calls[0][0]
+				expect(config.data.files).toEqual([{ nodeId: '9007199254740993' }, { nodeId: 22 }])
+			})
+
+			it('does not send the empty node id tab.ts falls back to when the node has none', async () => {
+				const store = useFilesStore()
+				store.files[-1] = {
+					id: -1,
+					nodeId: '',
+					name: 'unknown.pdf',
+					signers: [{ email: 'signer@example.com' }],
+					signatureFlow: 'parallel',
+				}
+				store.selectedFileId = -1
+				axiosMock.mockResolvedValue({
+					data: { ocs: { data: { id: 12, nodeId: 12, signatureFlow: 'parallel', signers: [] } } },
+				})
+
+				await store.saveOrUpdateSignatureRequest({})
+
+				const config = axiosMock.mock.calls[0][0]
+				expect(config.data.file).toBeNull()
 			})
 
 			it('serializes envelope files with nodeId-based references for creation flows', async () => {

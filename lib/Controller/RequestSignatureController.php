@@ -10,11 +10,11 @@ namespace OCA\Libresign\Controller;
 
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Exception\LibresignException;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Middleware\Attribute\RequireManager;
 use OCA\Libresign\Service\File\FileListService;
 use OCA\Libresign\Service\RequestSignatureService;
 use OCA\Libresign\Service\RequestSignatureWorkflowService;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\ApiRoute;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
@@ -42,7 +42,7 @@ class RequestSignatureController extends AEnvironmentAwareController {
 		protected IL10N $l10n,
 		protected IUserSession $userSession,
 		protected FileListService $fileListService,
-		protected ValidateHelper $validateHelper,
+		protected SigningRequestValidator $signingRequestValidator,
 		protected RequestSignatureService $requestSignatureService,
 		private RequestSignatureWorkflowService $requestSignatureWorkflowService,
 	) {
@@ -59,10 +59,10 @@ class RequestSignatureController extends AEnvironmentAwareController {
 	 * For `nodeType=file`, `filesCount=1` and `files` contains the current file.
 	 * For `nodeType=envelope`, `files` contains envelope child files.
 	 *
-	 * @param LibresignNewSigner[] $signers Collection of signers who must sign the document. Use identifyMethods as the canonical format. Other supported fields: displayName, description, notify, signingOrder, status, geolocationRequired
+	 * @param LibresignNewSigner[] $signers Collection of signers who must sign the document. Use identifyMethods as the canonical format. Other supported fields: displayName, description, notify, signingOrder, status, deviceGeolocationRequired
 	 * @param string $name The name of file to sign
 	 * @param LibresignFolderSettings $settings Settings to define how and where the file should be stored
-	 * @param LibresignNewFile $file File object. Supports nodeId, url, base64 or path.
+	 * @param LibresignNewFile $file File object. Supports nodeId (a non-negative integer or its canonical decimal string, as Nextcloud node ids can exceed a JavaScript number), url, base64 or path.
 	 * @param list<LibresignNewFile> $files Multiple files to create an envelope (optional, use either file or files). Each file supports nodeId, url, base64 or path.
 	 * @param string|null $callback URL that will receive a POST after the document is signed
 	 * @param integer|null $status Numeric code of status * 0 - no signers * 1 - signed * 2 - pending
@@ -134,7 +134,7 @@ class RequestSignatureController extends AEnvironmentAwareController {
 	 * @param LibresignNewSigner[]|null $signers Collection of signers who must sign the document. Use identifyMethods as the canonical format.
 	 * @param string|null $uuid UUID of sign request. The signer UUID is what the person receives via email when asked to sign. This is not the file UUID.
 	 * @param LibresignVisibleElement[]|null $visibleElements Visible elements on document
-	 * @param LibresignNewFile|null $file File object. Supports nodeId, url, base64 or path when creating a new request.
+	 * @param LibresignNewFile|null $file File object. Supports nodeId (a non-negative integer or its canonical decimal string), url, base64 or path when creating a new request.
 	 * @param integer|null $status Numeric code of status * 0 - no signers * 1 - signed * 2 - pending
 	 * @param array<string, mixed>|null $policy Structured policy payload with request-level overrides and active context.
 	 * @param string|null $name The name of file to sign
@@ -234,8 +234,9 @@ class RequestSignatureController extends AEnvironmentAwareController {
 					'fileId' => $fileId
 				]
 			];
-			$this->validateHelper->validateExistingFile($data);
-			$this->validateHelper->validateIsSignerOfFile($signRequestId, $fileId);
+			$this->signingRequestValidator->validateExistingFile($data);
+			$this->signingRequestValidator->validateWorkflowIsNotClosedByFileId($fileId);
+			$this->signingRequestValidator->validateIsSignerOfFile($signRequestId, $fileId);
 			$this->requestSignatureService->unassociateToUser($fileId, $signRequestId);
 		} catch (\Throwable $th) {
 			return new DataResponse(
@@ -279,7 +280,7 @@ class RequestSignatureController extends AEnvironmentAwareController {
 					'fileId' => $fileId
 				]
 			];
-			$this->validateHelper->validateExistingFile($data);
+			$this->signingRequestValidator->validateExistingFile($data);
 			$this->requestSignatureService->deleteRequestSignature($data);
 		} catch (\Throwable $th) {
 			return new DataResponse(

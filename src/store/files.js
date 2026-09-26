@@ -22,6 +22,7 @@ import { usePoliciesStore } from './policies'
 import { useSidebarStore } from './sidebar.js'
 import { FILE_STATUS } from '../constants.js'
 import { getSigningRouteUuid } from '../utils/signRequestUuid.ts'
+import { isCurrentUserObserver, isSigningParticipant } from '../utils/participantRole.ts'
 
 /** @typedef {import('../types/index').IdentifyMethodRecord} SignerMethodRecord */
 /** @typedef {import('../types/index').FileSettings} FileSettings */
@@ -54,6 +55,7 @@ import { getSigningRouteUuid } from '../utils/signRequestUuid.ts'
  * 	status?: number
  * 	statusText?: string
  * 	signingOrder?: number
+ * 	participantRole?: string
  * 	localKey?: string
  * 	acceptsEmailNotifications?: boolean
  * 	identifyMethods?: SignerMethodRecord[]
@@ -61,6 +63,11 @@ import { getSigningRouteUuid } from '../utils/signRequestUuid.ts'
  * 	me?: boolean
  * 	signed?: string | null | boolean | unknown[]
  * 	sign_request_uuid?: string | null
+ * 	deviceGeolocationRequired?: boolean
+ * 	metadata?: {
+ * 		deviceGeolocationRequirement?: string
+ * 		geolocation?: Record<string, unknown>
+ * 	}
  * }} EditableSignerDraft
  */
 
@@ -687,6 +694,7 @@ const _filesStore = defineStore('files', () => {
 			return false
 		}
 		return selectedFile.signers
+			.filter(isSigningParticipant)
 			.filter(signer => signer.signed?.length > 0).length > 0
 	}
 
@@ -701,13 +709,17 @@ const _filesStore = defineStore('files', () => {
 		if (!Array.isArray(selectedFile.signers)) {
 			return false
 		}
-		return selectedFile.signers.length > 0
-			&& selectedFile.signers
-				.filter(signer => signer.signed?.length > 0).length === selectedFile.signers.length
+		const signingParticipants = selectedFile.signers.filter(isSigningParticipant)
+		return signingParticipants.length > 0
+			&& signingParticipants
+				.filter(signer => signer.signed?.length > 0).length === signingParticipants.length
 	}
 
 	function canSign(file) {
 		const selectedFile = getFile(file)
+		if (isCurrentUserObserver(selectedFile)) {
+			return false
+		}
 		if (typeof selectedFile?.canSign === 'boolean') {
 			return selectedFile.canSign
 		}
@@ -717,7 +729,8 @@ const _filesStore = defineStore('files', () => {
 		const isSigned = (signer) => Array.isArray(signer.signed)
 			? signer.signed.length > 0
 			: !!signer.signed
-		const mySigners = selectedFile?.signers?.filter(signer => signer.me) || []
+		const mySigners = (selectedFile?.signers?.filter(signer => signer.me) || [])
+			.filter(isSigningParticipant)
 		if (isFullSigned(selectedFile)
 			|| selectedFile.status <= 0
 			|| mySigners.some((signer) => isSigned(signer))) {
@@ -738,7 +751,7 @@ const _filesStore = defineStore('files', () => {
 			return true
 		}
 
-		const pendingSigners = selectedFile?.signers?.filter(signer => !isSigned(signer)) || []
+		const pendingSigners = selectedFile?.signers?.filter(signer => !isSigned(signer) && isSigningParticipant(signer)) || []
 		if (pendingSigners.length === 0) {
 			return false
 		}
@@ -752,6 +765,10 @@ const _filesStore = defineStore('files', () => {
 		return [2, 3].includes(Number(selectedFile?.status))
 			|| isPartialSigned(selectedFile)
 			|| isFullSigned(selectedFile)
+	}
+
+	function isObservingOnly(file) {
+		return isCurrentUserObserver(getFile(file))
 	}
 
 	function canDelete(file) {
@@ -896,6 +913,27 @@ const _filesStore = defineStore('files', () => {
 	}
 
 	/** @param {EditableSignerDraft[] | null | undefined} signers */
+	/**
+	 * Prefer the explicit requester toggle; fall back to frozen metadata from the API
+	 * so later saves/notify do not drop a previously required freeze.
+	 *
+	 * @param {EditableSignerDraft | Record<string, unknown>} signer
+	 * @return {boolean|undefined}
+	 */
+	function resolveGeolocationRequiredForRequest(signer) {
+		if (typeof signer?.deviceGeolocationRequired === 'boolean') {
+			return signer.deviceGeolocationRequired
+		}
+		const frozenRequirement = signer?.metadata?.deviceGeolocationRequirement
+		if (frozenRequirement === 'required') {
+			return true
+		}
+		if (frozenRequirement === 'disabled') {
+			return false
+		}
+		return undefined
+	}
+
 	function serializeRequestSigners(signers) {
 		if (!Array.isArray(signers)) {
 			return []
@@ -919,6 +957,7 @@ const _filesStore = defineStore('files', () => {
 						})
 						.filter(Boolean)
 					: []
+				const deviceGeolocationRequired = resolveGeolocationRequiredForRequest(signer)
 				return {
 					...(identifyMethods?.length ? { identifyMethods } : {}),
 					...(typeof signer.displayName === 'string' ? { displayName: signer.displayName } : {}),
@@ -926,9 +965,31 @@ const _filesStore = defineStore('files', () => {
 					...(typeof signer.notify === 'number' ? { notify: signer.notify } : {}),
 					...(typeof signer.signingOrder === 'number' ? { signingOrder: signer.signingOrder } : {}),
 					...(typeof signer.status === 'number' ? { status: signer.status } : {}),
+					...(typeof signer.participantRole === 'string' ? { participantRole: signer.participantRole } : {}),
+					...(typeof deviceGeolocationRequired === 'boolean'
+						? { deviceGeolocationRequired }
+						: {}),
 				}
 			})
 			.filter((signer) => signer && signer.identifyMethods?.length)
+	}
+
+	/**
+	 * Whether a value identifies a Nextcloud node. Besides the historical
+	 * positive number, `@nextcloud/files` exposes `Node.id` as a string and
+	 * that is what the Files sidebar hands to AppFilesTab (#8363). The string
+	 * is kept as is: node ids are 64-bit and converting them with Number()
+	 * could change the value above Number.MAX_SAFE_INTEGER. The API accepts
+	 * both representations.
+	 *
+	 * @param {unknown} value
+	 * @return {value is number | string}
+	 */
+	function isNodeId(value) {
+		if (typeof value === 'number') {
+			return Number.isInteger(value) && value > 0
+		}
+		return typeof value === 'string' && /^[1-9][0-9]*$/.test(value)
 	}
 
 	/** @param {EditableFileReferenceDraft | ApiFileRecord | EditableFileDraft | string | null | undefined} file */
@@ -942,7 +1003,7 @@ const _filesStore = defineStore('files', () => {
 		if (typeof file.path === 'string' && file.path.length > 0) {
 			return { path: file.path }
 		}
-		if (preferNodeId && typeof file.nodeId === 'number' && file.nodeId > 0) {
+		if (preferNodeId && isNodeId(file.nodeId)) {
 			return { nodeId: file.nodeId }
 		}
 		if (typeof file.fileId === 'number' && file.fileId > 0) {
@@ -953,7 +1014,7 @@ const _filesStore = defineStore('files', () => {
 				return { fileId: file.id }
 			}
 		}
-		if (typeof file.nodeId === 'number' && file.nodeId > 0) {
+		if (isNodeId(file.nodeId)) {
 			return { nodeId: file.nodeId }
 		}
 		if (typeof file.url === 'string' && file.url.length > 0) {
@@ -979,8 +1040,10 @@ const _filesStore = defineStore('files', () => {
 				break
 			}
 		}
-		if (!signer.signingOrder && editableFile.signatureFlow === 'ordered_numeric') {
-			const maxOrder = editableFile.signers.reduce((max, s) => Math.max(max, s.signingOrder || 0), 0)
+		if (!signer.signingOrder && editableFile.signatureFlow === 'ordered_numeric' && isSigningParticipant(signer)) {
+			const maxOrder = editableFile.signers
+				.filter(isSigningParticipant)
+				.reduce((max, currentSigner) => Math.max(max, currentSigner.signingOrder || 0), 0)
 			signer.signingOrder = maxOrder + 1
 		}
 		editableFile.signers.push(signer)
@@ -1006,9 +1069,9 @@ const _filesStore = defineStore('files', () => {
 			.filter((currentSigner) => currentSigner.localKey !== signer.localKey)
 		selectedFile.signersCount = selectedFile.signers.length
 
-		if (selectedFile.signatureFlow === 'ordered_numeric' && signer.signingOrder) {
+		if (selectedFile.signatureFlow === 'ordered_numeric' && signer.signingOrder && isSigningParticipant(signer)) {
 			selectedFile.signers.forEach((s) => {
-				if (s.signingOrder && s.signingOrder > signer.signingOrder) {
+				if (s.signingOrder && s.signingOrder > signer.signingOrder && isSigningParticipant(s)) {
 					s.signingOrder -= 1
 				}
 			})
@@ -1379,6 +1442,7 @@ const _filesStore = defineStore('files', () => {
 		isFullSigned,
 		canSign,
 		canValidate,
+		isObservingOnly,
 		canDelete,
 		canAddSigner,
 		isDocMdpNoChangesAllowed,

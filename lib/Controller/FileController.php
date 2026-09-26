@@ -16,7 +16,6 @@ use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Enum\FileStatus;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Helper\JSActions;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Middleware\Attribute\PrivateValidation;
 use OCA\Libresign\Middleware\Attribute\RequireFileAccess;
 use OCA\Libresign\Middleware\Attribute\RequireManager;
@@ -27,6 +26,8 @@ use OCA\Libresign\Service\FileService;
 use OCA\Libresign\Service\Policy\ValidationEffectivePolicyService;
 use OCA\Libresign\Service\RequestSignatureService;
 use OCA\Libresign\Service\SessionService;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\ApiRoute;
@@ -81,7 +82,8 @@ class FileController extends AEnvironmentAwareController {
 		private IMimeIconProvider $mimeIconProvider,
 		private FileService $fileService,
 		private FileListService $fileListService,
-		private ValidateHelper $validateHelper,
+		private SigningRequestValidator $signingRequestValidator,
+		private FileInputValidator $fileInputValidator,
 		private SettingsLoader $settingsLoader,
 		private IURLGenerator $urlGenerator,
 	) {
@@ -132,16 +134,17 @@ class FileController extends AEnvironmentAwareController {
 	 * @param bool $showVisibleElements Whether to include visible elements in the response
 	 * @param bool $showMessages Whether to include validation messages in the response
 	 * @param bool $showValidateFile Whether to include the file payload in the response
-	 * @return DataResponse<Http::STATUS_OK, LibresignValidatedFileResponse, array{}>|DataResponse<Http::STATUS_NOT_FOUND, LibresignActionErrorResponse, array{}>
+	 * @return DataResponse<Http::STATUS_OK, LibresignValidatedFileResponse, array{}>|DataResponse<Http::STATUS_FORBIDDEN, array<empty>, array{}>|DataResponse<Http::STATUS_NOT_FOUND, LibresignActionErrorResponse, array{}>
 	 *
 	 * 200: OK
+	 * 403: Forbidden
 	 * 404: Request failed
-	 * 422: Request failed
 	 */
 	#[PrivateValidation]
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
 	#[PublicPage]
+	#[RequireFileAccess('fileId')]
 	#[ApiRoute(verb: 'GET', url: '/api/{apiVersion}/file/validate/file_id/{fileId}', requirements: ['apiVersion' => '(v1)'])]
 	public function validateFileId(
 		int $fileId,
@@ -584,7 +587,7 @@ class FileController extends AEnvironmentAwareController {
 		array $files = [],
 	): DataResponse {
 		try {
-			$this->validateHelper->canRequestSign($this->userSession->getUser());
+			$this->signingRequestValidator->canRequestSign($this->userSession->getUser());
 
 			$normalizedFiles = $this->prepareFilesForSaving($file, $files, $settings);
 
@@ -619,9 +622,10 @@ class FileController extends AEnvironmentAwareController {
 	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/file/{uuid}/add-file', requirements: ['apiVersion' => '(v1)'])]
 	public function addFileToEnvelope(string $uuid): DataResponse {
 		try {
-			$this->validateHelper->canRequestSign($this->userSession->getUser());
+			$this->signingRequestValidator->canRequestSign($this->userSession->getUser());
 
 			$envelope = $this->fileMapper->getByUuid($uuid);
+			$this->signingRequestValidator->iRequestedSignThisFile($this->userSession->getUser(), $envelope->getId());
 
 			if ($envelope->getNodeType() !== 'envelope') {
 				// TRANSLATORS Error shown when adding files to a signature envelope but the given UUID is not an envelope container.
@@ -711,7 +715,7 @@ class FileController extends AEnvironmentAwareController {
 				'settings' => $settings
 			]);
 		} else {
-			$this->validateHelper->validateNewFile([
+			$this->fileInputValidator->validateNewFile([
 				'file' => $fileData,
 				'userManager' => $this->userSession->getUser(),
 			]);
@@ -741,12 +745,18 @@ class FileController extends AEnvironmentAwareController {
 		}
 
 		if (!empty($files)) {
-			/** @var list<array{fileNode?: Node, name?: string}> $files */
-			return $files;
+			/** @var list<array{fileNode?: Node, name?: string}> $normalizedFiles */
+			$normalizedFiles = array_map(
+				fn (mixed $each): mixed => is_array($each) ? $this->fileInputValidator->normalizeNodeId($each) : $each,
+				$files,
+			);
+			return $normalizedFiles;
 		}
 
 		if (!empty($file)) {
-			return [$file];
+			/** @var array{fileNode?: Node, name?: string} $normalizedFile */
+			$normalizedFile = $this->fileInputValidator->normalizeNodeId($file);
+			return [$normalizedFile];
 		}
 
 		// TRANSLATORS Error shown when creating or updating a signature request without a file.
@@ -848,7 +858,7 @@ class FileController extends AEnvironmentAwareController {
 					'fileId' => $fileId
 				]
 			];
-			$this->validateHelper->validateExistingFile($data);
+			$this->signingRequestValidator->validateExistingFile($data);
 			$this->fileService->delete($fileId, $deleteFile);
 		} catch (\Throwable $th) {
 			return new DataResponse(

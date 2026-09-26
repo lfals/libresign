@@ -160,7 +160,7 @@ import NcIconSvgWrapper from '@nextcloud/vue/components/NcIconSvgWrapper'
 
 import { useSignStore } from '../../../store/sign.js'
 import { useSignMethodsStore } from '../../../store/signMethods.js'
-import { getCurrentSignerSignRequestUuid } from '../../../utils/signRequestUuid.ts'
+import { getSigningRouteUuid } from '../../../utils/signRequestUuid.ts'
 import { validateEmail } from '../../../utils/validators.js'
 
 defineOptions({
@@ -219,9 +219,12 @@ type SignMethodsStore = {
 type SignStore = {
 	document: {
 		fileId?: number
+		uuid?: string | null
 		signers?: Array<{ me?: boolean; sign_request_uuid?: string }>
+		settings?: { isApprover?: boolean } | null
 	}
 	errors?: Array<{ message?: string }>
+	buildRequestCodeUrl: (signRequestUuid: string) => string
 }
 
 type RequestCodeError = {
@@ -378,7 +381,6 @@ async function requestCode() {
 	try {
 		const params = props.mode === 'email'
 			? {
-				identify: sendTo.value,
 				identifyMethod: signMethodsStore.settings.emailToken?.identifyMethod,
 				signMethod: 'emailToken',
 			}
@@ -395,16 +397,12 @@ async function requestCode() {
 				params,
 			)
 		} else {
-			const signRequestUuid = getCurrentSignerSignRequestUuid(signStore.document)
+			// Same route/context decision as signing (Sign.vue).
+			const signRequestUuid = getSigningRouteUuid(signStore.document)
 			if (!signRequestUuid) {
 				throw new Error(t('libresign', 'Document not found'))
 			}
-			await axios.post(
-				generateOcsUrl('/apps/libresign/api/v1/sign/uuid/{uuid}/code', {
-					uuid: signRequestUuid,
-				}),
-				params,
-			)
+			await axios.post(signStore.buildRequestCodeUrl(signRequestUuid), params)
 		}
 
 		if (props.mode === 'email') {
@@ -416,12 +414,7 @@ async function requestCode() {
 	} catch (error) {
 		const err = error as RequestCodeError
 		const msg = err.response?.data?.ocs?.data?.message || err.response?.data?.message || err.message
-		if (props.mode === 'token' && msg?.includes('Invalid configuration') && activeTokenMethod.value) {
-			const method = activeTokenMethod.value.charAt(0).toUpperCase() + activeTokenMethod.value.slice(1)
-			showError(t('libresign', '{method} is not configured. Please contact your administrator.', { method }))
-		} else {
-			showError(msg || t('libresign', 'Unable to send verification code.'))
-		}
+		showError(msg || t('libresign', 'Unable to send verification code.'))
 	} finally {
 		loading.value = false
 	}

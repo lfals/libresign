@@ -8,6 +8,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import type { VueWrapper } from '@vue/test-utils'
 import ModalVerificationCode from '@/views/SignPDF/_partials/ModalVerificationCode.vue'
+import axios from '@nextcloud/axios'
 import { useSignMethodsStore } from '@/store/signMethods.js'
 import { useSignStore } from '@/store/sign.js'
 
@@ -18,18 +19,22 @@ type ModalVerificationCodeVm = {
 	tokenRequested: boolean
 	token: string
 	loading: boolean
+	sendTo: string
+	emailIsValid: boolean
 	signMethodsStore: {
 		settings: {
 			emailToken?: {
 				hasConfirmCode?: boolean
 				hashOfEmail?: string
 				blurredEmail?: string
+			identifyMethod?: string
 			}
 		}
 	}
 	sendCode: () => void
 	requestNewCode: () => void
 	signDocument: () => void
+	requestCode: () => Promise<void>
 	$nextTick: () => Promise<void>
 }
 
@@ -43,6 +48,7 @@ type SignMethodsStoreWithSettings = ReturnType<typeof useSignMethodsStore> & {
 			hasConfirmCode?: boolean
 			hashOfEmail?: string
 			blurredEmail?: string
+			identifyMethod?: string
 		}
 		smsToken?: {
 			identifyMethod?: string
@@ -58,13 +64,16 @@ const ensureEmailToken = (store: SignMethodsStoreWithSettings) => {
 }
 
 // Mock axios
-vi.mock('@nextcloud/axios', () => ({
-	default: vi.fn().mockResolvedValue({ data: { ocs: { data: {} } } }),
-	post: vi.fn().mockResolvedValue({ data: { ocs: { data: { message: 'Code sent' } } } }),
-}))
+vi.mock('@nextcloud/axios', () => {
+	const post = vi.fn().mockResolvedValue({ data: { ocs: { data: { message: 'Code sent' } } } })
+	return {
+		default: Object.assign(vi.fn().mockResolvedValue({ data: { ocs: { data: {} } } }), { post }),
+		post,
+	}
+})
 
 vi.mock('@nextcloud/router', () => ({
-	generateOcsUrl: vi.fn((path: string) => `/ocs/v2.php/apps/libresign${path}`),
+	generateOcsUrl: vi.fn((path: string, params: Record<string, string | number> = {}) => `/ocs/v2.php${path.replace(/\{(\w+)\}/g, (_match, key: string) => String(params[key]))}`),
 }))
 
 vi.mock('@nextcloud/initial-state', () => ({
@@ -117,6 +126,41 @@ describe('ModalVerificationCode (email mode)', () => {
 			hashOfEmail: '5d41402abc4b2a76b9719d911017c592',
 			blurredEmail: 'u***@email.com',
 		}
+	})
+
+
+	it('does not send the entered email as a verification-code destination', async () => {
+		vi.mocked(axios.post).mockClear()
+
+		const signStore = useSignStore()
+		signStore.document = {
+			...signStore.document,
+			fileId: 42,
+		} as typeof signStore.document
+
+		signMethodsStore.settings.emailToken = {
+			hasConfirmCode: false,
+			hashOfEmail: '86d912b85700794cef9540e274bc07fe',
+			blurredEmail: 's*****@example.com',
+			identifyMethod: 'email',
+		}
+
+		wrapper = mountEmail()
+		wrapper.vm.sendTo = 'signer@example.com'
+
+		expect(wrapper.vm.emailIsValid).toBe(true)
+
+		await wrapper.vm.requestCode()
+
+		expect(axios.post).toHaveBeenCalledTimes(1)
+
+		const [, body] = vi.mocked(axios.post).mock.calls[0]
+
+		expect(body).toEqual({
+			identifyMethod: 'email',
+			signMethod: 'emailToken',
+		})
+		expect(body).not.toHaveProperty('identify')
 	})
 
 	it('displays progress indicator on step 1 in email mode', async () => {
@@ -489,5 +533,85 @@ describe('ModalVerificationCode (token mode)', () => {
 		await wrapper.vm.$nextTick()
 
 		expect(wrapper.vm.loading).toBe(false)
+	})
+})
+
+describe('ModalVerificationCode requestCode route (#8365)', () => {
+	let signMethodsStore: SignMethodsStoreWithSettings
+
+	const stubs = {
+		NcDialog: { template: '<div><slot /></div>' },
+		NcTextField: { template: '<input />' },
+		NcButton: { template: '<button><slot /></button>' },
+		NcLoadingIcon: { template: '<div />' },
+		NcIconSvgWrapper: { template: '<div />' },
+	}
+
+	const mountToken = () => mount(ModalVerificationCode, {
+		props: { mode: 'token', phoneNumber: '+5511999999999' },
+		global: { stubs },
+	}) as ModalVerificationCodeWrapper
+
+	beforeEach(() => {
+		setActivePinia(createPinia())
+		vi.mocked(axios.post).mockClear()
+		signMethodsStore = useSignMethodsStore() as SignMethodsStoreWithSettings
+		signMethodsStore.modal.token = true
+		signMethodsStore.settings.smsToken = {
+			identifyMethod: 'account',
+		}
+	})
+
+	it('requests the code for an approver with the file uuid and the id-doc approval context', async () => {
+		const signStore = useSignStore()
+		// The document was uploaded by an external signer; the approver is not
+		// among the signers (no entry with me: true), like the backend returns it.
+		signStore.document = {
+			...signStore.document,
+			uuid: 'id-doc-file-uuid',
+			signers: [{ me: false, sign_request_uuid: 'external-signer-uuid', email: 'external@example.com' }],
+			settings: { isApprover: true },
+		} as typeof signStore.document
+
+		const wrapper = mountToken()
+		await wrapper.vm.requestCode()
+
+		expect(axios.post).toHaveBeenCalledTimes(1)
+		const [url] = vi.mocked(axios.post).mock.calls[0]
+		expect(url).toBe('/ocs/v2.php/apps/libresign/api/v1/sign/uuid/id-doc-file-uuid/code?idDocApproval=true')
+		expect(url).not.toContain('external-signer-uuid')
+		expect(wrapper.vm.tokenRequested).toBe(true)
+	})
+
+	it('keeps requesting the code with the signer uuid for a regular signer', async () => {
+		const signStore = useSignStore()
+		signStore.document = {
+			...signStore.document,
+			uuid: 'file-uuid',
+			signers: [{ me: true, sign_request_uuid: 'my-signer-uuid' }],
+			settings: { isApprover: false },
+		} as typeof signStore.document
+
+		const wrapper = mountToken()
+		await wrapper.vm.requestCode()
+
+		const [url] = vi.mocked(axios.post).mock.calls[0]
+		expect(url).toBe('/ocs/v2.php/apps/libresign/api/v1/sign/uuid/my-signer-uuid/code')
+	})
+
+	it('uses the signer uuid when the approver is also a regular signer of the document', async () => {
+		const signStore = useSignStore()
+		signStore.document = {
+			...signStore.document,
+			uuid: 'file-uuid',
+			signers: [{ me: true, sign_request_uuid: 'my-signer-uuid' }],
+			settings: { isApprover: true },
+		} as typeof signStore.document
+
+		const wrapper = mountToken()
+		await wrapper.vm.requestCode()
+
+		const [url] = vi.mocked(axios.post).mock.calls[0]
+		expect(url).toBe('/ocs/v2.php/apps/libresign/api/v1/sign/uuid/my-signer-uuid/code')
 	})
 })

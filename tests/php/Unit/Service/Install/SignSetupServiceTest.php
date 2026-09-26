@@ -12,6 +12,9 @@ use bovigo\vfs\vfsStream;
 use OC\IntegrityCheck\Helpers\EnvironmentHelper;
 use OC\IntegrityCheck\Helpers\FileAccessHelper;
 use OCA\Libresign\AppInfo\Application;
+use OCA\Libresign\Service\Install\DependencyStorage;
+use OCA\Libresign\Service\Install\SetupInstallPathResolver;
+use OCA\Libresign\Service\Install\SetupSignatureVerifier;
 use OCA\Libresign\Service\Install\SignSetupService;
 use OCP\App\IAppManager;
 use OCP\Files\AppData\IAppDataFactory;
@@ -28,6 +31,7 @@ final class SignSetupServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private IAppConfig $appConfig;
 	private IAppManager&MockObject $appManager;
 	private IAppDataFactory $appDataFactory;
+	private DependencyStorage $dependencyStorage;
 	private ITempManager $tempManager;
 
 	#[\Override]
@@ -38,6 +42,7 @@ final class SignSetupServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->config = $this->createMock(IConfig::class);
 		$this->appConfig = $this->getMockAppConfigWithReset();
 		$this->appDataFactory = \OCP\Server::get(IAppDataFactory::class);
+		$this->dependencyStorage = new DependencyStorage($this->appDataFactory, $this->config);
 		$this->tempManager = \OCP\Server::get(ITempManager::class);
 	}
 
@@ -52,12 +57,10 @@ final class SignSetupServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			});
 		return $this->getMockBuilder(SignSetupService::class)
 			->setConstructorArgs([
-				$this->environmentHelper,
 				$this->fileAccessHelper,
-				$this->config,
-				$this->appConfig,
+				new SetupSignatureVerifier($this->environmentHelper, $this->fileAccessHelper),
+				new SetupInstallPathResolver($this->config, $this->appConfig, $this->dependencyStorage),
 				$this->appManager,
-				$this->appDataFactory,
 				$this->tempManager,
 			])
 			->onlyMethods($methods)
@@ -90,9 +93,7 @@ final class SignSetupServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	}
 
 	private function writeAppSignature(string $architecture, $resource): SignSetupService {
-		$this->environmentHelper->method('getServerRoot')
-			->willReturn('vfs://home');
-
+		$this->environmentHelper->method('getServerRoot')->willReturn('vfs://home');
 		$this->appConfig->setValueString(Application::APP_ID, 'java_path', 'vfs://home/data/appdata_1/libresign/' . $architecture . '/linux/java/jdk-21.0.2+13-jre/bin/java');
 		$signSetupService = $this->getInstance([
 			'getAppInfoDirectory',
@@ -196,41 +197,20 @@ final class SignSetupServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->assertJsonStringEqualsJsonString($expected, $actual);
 	}
 
-	#[DataProvider('dataGetInstallPath')]
-	public function testGetInstallPath(string $architecture, string $resource, string $distro, string $expected): void {
-		$this->appConfig->setValueString(Application::APP_ID, 'java_path', 'vfs://home/data/appdata_1/libresign/x86_64/linux/java/jdk-21.0.2+13-jre/bin/java');
-		$this->appConfig->setValueString(Application::APP_ID, 'jsignpdf_jar_path', 'vfs://home/data/appdata_1/libresign/x86_64/jsignpdf/jsignpdf-2.2.2/JSignPdf.jar');
-		$this->appConfig->setValueString(Application::APP_ID, 'pdftk_path', 'vfs://home/data/appdata_1/libresign/x86_64/pdftk/pdftk.jar');
-		$this->appConfig->setValueString(Application::APP_ID, 'cfssl_bin', 'vfs://home/data/appdata_1/libresign/x86_64/cfssl/cfssl');
-		$actual = $this->getInstance()
-			->setArchitecture($architecture)
-			->setDistro($distro)
-			->setResource($resource)
-			->getInstallPath();
-		$this->assertEquals(
-			$expected,
-			$actual
+	public function testVerifyDetectsMissingFileWhenAnotherFileHasSameHash(): void {
+		$architecture = 'x86_64';
+		$signSetupService = $this->writeAppSignature($architecture, 'java');
+
+		unlink(
+			'vfs://home/data/appdata_1/libresign/'
+			. $architecture
+			. '/linux/java/jdk-21.0.2+13-jre/fakeFile01'
 		);
+
+		$result = $signSetupService->verify($architecture, 'java');
+
+		$this->assertArrayHasKey('FILE_MISSING', $result);
+		$this->assertArrayHasKey('fakeFile01', $result['FILE_MISSING']);
 	}
 
-	public static function dataGetInstallPath(): array {
-		return [
-			['x86_64', 'java', 'linux', 'vfs://home/data/appdata_1/libresign/x86_64/linux/java/jdk-21.0.2+13-jre'],
-			['x86_64', 'java', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/x86_64/alpine-linux/java/jdk-21.0.2+13-jre'],
-			['x86_64', 'pdftk', 'linux', 'vfs://home/data/appdata_1/libresign/x86_64/pdftk'],
-			['x86_64', 'pdftk', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/x86_64/pdftk'],
-			['x86_64', 'jsignpdf', 'linux', 'vfs://home/data/appdata_1/libresign/x86_64/jsignpdf'],
-			['x86_64', 'jsignpdf', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/x86_64/jsignpdf'],
-			['x86_64', 'cfssl', 'linux', 'vfs://home/data/appdata_1/libresign/x86_64/cfssl'],
-			['x86_64', 'cfssl', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/x86_64/cfssl'],
-			['aarch64', 'java', 'linux', 'vfs://home/data/appdata_1/libresign/aarch64/linux/java/jdk-21.0.2+13-jre'],
-			['aarch64', 'java', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/aarch64/alpine-linux/java/jdk-21.0.2+13-jre'],
-			['aarch64', 'pdftk', 'linux', 'vfs://home/data/appdata_1/libresign/aarch64/pdftk'],
-			['aarch64', 'pdftk', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/aarch64/pdftk'],
-			['aarch64', 'jsignpdf', 'linux', 'vfs://home/data/appdata_1/libresign/aarch64/jsignpdf'],
-			['aarch64', 'jsignpdf', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/aarch64/jsignpdf'],
-			['aarch64', 'cfssl', 'linux', 'vfs://home/data/appdata_1/libresign/aarch64/cfssl'],
-			['aarch64', 'cfssl', 'alpine-linux', 'vfs://home/data/appdata_1/libresign/aarch64/cfssl'],
-		];
-	}
 }

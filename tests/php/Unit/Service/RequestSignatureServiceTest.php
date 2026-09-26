@@ -16,10 +16,10 @@ use OCA\Libresign\Db\IdentifyMethod;
 use OCA\Libresign\Db\IdentifyMethodMapper;
 use OCA\Libresign\Db\SignRequest;
 use OCA\Libresign\Db\SignRequestMapper;
+use OCA\Libresign\Enum\ParticipantRole;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Helper\FileUploadHelper;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Service\DocMdp\ConfigService as DocMdpConfigService;
 use OCA\Libresign\Service\Envelope\EnvelopeFileRelocator;
 use OCA\Libresign\Service\Envelope\EnvelopeService;
@@ -37,6 +37,9 @@ use OCA\Libresign\Service\SignRequest\SignRequestService;
 use OCA\Libresign\Service\SignRequest\StatusCacheService;
 use OCA\Libresign\Service\SignRequest\StatusService;
 use OCA\Libresign\Service\SignRequest\StatusUpdatePolicy;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\SignerValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\Folder;
 use OCP\Files\IMimeTypeDetector;
@@ -60,7 +63,9 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 	private IClientService&MockObject $clientService;
 	private IUserManager&MockObject $userManager;
 	private FolderService&MockObject $folderService;
-	private ValidateHelper&MockObject $validateHelper;
+	private FileInputValidator&MockObject $fileInputValidator;
+	private SigningRequestValidator&MockObject $signingRequestValidator;
+	private SignerValidator&MockObject $signerValidator;
 	private FileElementMapper&MockObject $fileElementMapper;
 	private FileElementService&MockObject $fileElementService;
 	private IdentifyMethodService&MockObject $identifyMethodService;
@@ -96,7 +101,9 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 		$this->clientService = $this->createMock(IClientService::class);
 		$this->userManager = $this->createMock(IUserManager::class);
 		$this->folderService = $this->createMock(FolderService::class);
-		$this->validateHelper = $this->createMock(ValidateHelper::class);
+		$this->fileInputValidator = $this->createMock(FileInputValidator::class);
+		$this->signingRequestValidator = $this->createMock(SigningRequestValidator::class);
+		$this->signerValidator = $this->createMock(SignerValidator::class);
 		$this->fileElementMapper = $this->createMock(FileElementMapper::class);
 		$this->fileElementService = $this->createMock(FileElementService::class);
 		$this->identifyMethodService = $this->createMock(IdentifyMethodService::class);
@@ -134,7 +141,9 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 					$this->fileElementMapper,
 					$this->folderService,
 					$this->mimeTypeDetector,
-					$this->validateHelper,
+					$this->fileInputValidator,
+					$this->signingRequestValidator,
+					$this->signerValidator,
 					$this->client,
 					$this->docMdpHandler,
 					$this->loggerInterface,
@@ -167,7 +176,9 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 			$this->fileElementMapper,
 			$this->folderService,
 			$this->mimeTypeDetector,
-			$this->validateHelper,
+			$this->fileInputValidator,
+			$this->signingRequestValidator,
+			$this->signerValidator,
 			$this->client,
 			$this->docMdpHandler,
 			$this->loggerInterface,
@@ -183,6 +194,39 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 			$this->filePolicyApplier,
 			$this->signerGeolocationPolicyService,
 		);
+	}
+
+	/**
+	 * saveFile() receives the node id already normalized to int by the
+	 * workflow boundary and looks the existing LibreSign file up with it.
+	 */
+	public function testSaveFileReusesTheFileRegisteredForTheNodeId(): void {
+		$service = $this->getService();
+
+		$existing = new \OCA\Libresign\Db\File();
+		$existing->setId(7);
+		$existing->setNodeId(9007199254740993);
+		$this->fileMapper->expects($this->once())
+			->method('getByNodeId')
+			->with(9007199254740993)
+			->willReturn($existing);
+		$this->filePolicyApplier->expects($this->once())
+			->method('syncAllPolicies')
+			->with($existing, $this->anything());
+		$this->fileStatusService->expects($this->once())
+			->method('updateFileStatusIfUpgrade')
+			->with($existing, 1)
+			->willReturn($existing);
+		$this->fileService->expects($this->never())->method('getNodeFromData');
+
+		$result = $service->saveFile([
+			'file' => ['nodeId' => 9007199254740993],
+			'name' => 'contract',
+			'status' => 1,
+			'userManager' => $this->user,
+		]);
+
+		$this->assertSame($existing, $result);
 	}
 
 	public function testSaveFilesUsesSaveForSingleFile(): void {
@@ -343,7 +387,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 
 	public function testValidateSignersRejectsLegacyIdentifyPayload(): void {
 		$this->expectExceptionMessage('No identify methods for signer');
-		$this->validateHelper
+		$this->signerValidator
 			->method('validateIdentifySigners')
 			->willThrowException(new LibresignException('No identify methods for signer'));
 
@@ -374,7 +418,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 			]],
 		];
 
-		$this->validateHelper
+		$this->signerValidator
 			->method('normalizeRequestSigners')
 			->willReturnCallback(static fn (array $signers): array => $signers);
 
@@ -414,6 +458,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 				int $signingOrder,
 				?int $fileStatus,
 				?int $signerStatus,
+				ParticipantRole $participantRole = ParticipantRole::SIGNER,
 				?callable $afterPersist = null,
 			) use (&$expectedCalls): SignRequest {
 				$expectedCall = array_shift($expectedCalls);
@@ -445,7 +490,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 			'status' => 9,
 			'signers' => [[
 				'displayName' => 'John Doe',
-				'geolocationRequired' => true,
+				'deviceGeolocationRequired' => true,
 				'identifyMethods' => [
 					['method' => 'email', 'value' => 'john@example.com'],
 					['method' => 'account', 'value' => 'john'],
@@ -453,7 +498,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 			]],
 		];
 
-		$this->validateHelper
+		$this->signerValidator
 			->method('normalizeRequestSigners')
 			->willReturnCallback(static fn (array $signers): array => $signers);
 
@@ -484,6 +529,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 				int $signingOrder = 0,
 				?int $fileStatus = null,
 				?int $signerStatus = null,
+				ParticipantRole $participantRole = ParticipantRole::SIGNER,
 				?callable $afterPersist = null,
 			) use (&$signRequestCounter): SignRequest {
 				$signRequest = new SignRequest();
@@ -503,12 +549,83 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 				$this->callback(static fn (SignRequest $signRequest): bool => in_array($signRequest->getId(), [501, 502], true)),
 				$file,
 				true,
-				null,
 			);
 
 		$actual = self::invokePrivate($this->getService(), 'associateToSigners', [$data, $file]);
 
 		$this->assertCount(2, $actual);
+	}
+
+	public function testAssociateToSignersPreservesFrozenGeolocationWhenFlagOmitted(): void {
+		$file = new \OCA\Libresign\Db\File();
+		$file->setId(77);
+
+		$data = [
+			'status' => 9,
+			'signers' => [[
+				'displayName' => 'John Doe',
+				'identifyMethods' => [
+					['method' => 'email', 'value' => 'john@example.com'],
+				],
+			]],
+		];
+
+		$this->signerValidator
+			->method('normalizeRequestSigners')
+			->willReturnCallback(static fn (array $signers): array => $signers);
+
+		$this->signRequestMapper
+			->method('getByFileId')
+			->with(77)
+			->willReturn([]);
+
+		$this->identifyMethodService
+			->method('clearCache');
+
+		$this->sequentialSigningService
+			->method('resetOrderCounter');
+
+		$this->sequentialSigningService
+			->method('determineSigningOrder')
+			->willReturn(1);
+
+		$this->signRequestService
+			->method('createOrUpdateSignRequest')
+			->willReturnCallback(function (
+				array $identifyMethods,
+				string $displayName,
+				string $description,
+				bool $notify,
+				int $fileId,
+				int $signingOrder = 0,
+				?int $fileStatus = null,
+				?int $signerStatus = null,
+				ParticipantRole $participantRole = ParticipantRole::SIGNER,
+				?callable $afterPersist = null,
+			): SignRequest {
+				$signRequest = new SignRequest();
+				$signRequest->setId(601);
+				$signRequest->setMetadata(['deviceGeolocationRequirement' => 'required']);
+
+				if ($afterPersist !== null) {
+					$afterPersist($signRequest);
+				}
+
+				return $signRequest;
+			});
+
+		$this->signerGeolocationPolicyService
+			->expects($this->once())
+			->method('getFrozenRequirement')
+			->willReturn(\OCA\Libresign\Enum\SignerGeolocationMode::REQUIRED);
+
+		$this->signerGeolocationPolicyService
+			->expects($this->never())
+			->method('persistEffectiveRequirement');
+
+		$actual = self::invokePrivate($this->getService(), 'associateToSigners', [$data, $file]);
+
+		$this->assertCount(1, $actual);
 	}
 
 	public function testDeleteIdentifyMethodIfNotExitsKeepsMatchingIdentifyMethods(): void {
@@ -525,7 +642,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 		$identifyMethod = $this->createMock(\OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod::class);
 		$identifyMethod->method('getEntity')->willReturn($entity);
 
-		$this->validateHelper
+		$this->signerValidator
 			->expects($this->once())
 			->method('normalizeRequestSigners')
 			->with([['identifyMethods' => [['method' => 'email', 'value' => 'john@example.com']]]])
@@ -557,7 +674,9 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 				$this->fileElementMapper,
 				$this->folderService,
 				$this->mimeTypeDetector,
-				$this->validateHelper,
+				$this->fileInputValidator,
+				$this->signingRequestValidator,
+				$this->signerValidator,
 				$this->client,
 				$this->docMdpHandler,
 				$this->loggerInterface,
@@ -599,7 +718,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 		$identifyMethod = $this->createMock(\OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod::class);
 		$identifyMethod->method('getEntity')->willReturn($entity);
 
-		$this->validateHelper
+		$this->signerValidator
 			->expects($this->once())
 			->method('normalizeRequestSigners')
 			->with([['identifyMethods' => [['method' => 'email', 'value' => 'john@example.com']]]])
@@ -631,7 +750,9 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 				$this->fileElementMapper,
 				$this->folderService,
 				$this->mimeTypeDetector,
-				$this->validateHelper,
+				$this->fileInputValidator,
+				$this->signingRequestValidator,
+				$this->signerValidator,
 				$this->client,
 				$this->docMdpHandler,
 				$this->loggerInterface,

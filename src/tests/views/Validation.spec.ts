@@ -21,6 +21,11 @@ type ValidationVm = {
 	getUUID: boolean
 	validationErrorMessage: string | null
 	documentValidMessage: string | null
+	documentValidType: 'success' | 'warning' | 'error' | 'info'
+	getDocumentValidationSummary: (document: Record<string, any>) => {
+		message: string
+		type: 'success' | 'warning' | 'error' | 'info'
+	}
 	isAsyncSigning: boolean
 	shouldFireAsyncConfetti: boolean
 	isActiveView: boolean
@@ -42,6 +47,8 @@ type ValidationVm = {
 	getName: (signer: Record<string, any>) => string
 	handleValidationSuccess: (data: Record<string, any>) => void
 	handleSigningComplete: (file: Record<string, any> | null) => void
+	initializeValidationForRoute: (uuid: string | undefined) => void
+	startPostSignValidationRefresh: () => void
 	refreshAfterAsyncSigning: () => Promise<void>
 	validateByUUID: (uuid: string, options?: { suppressLoading?: boolean }) => Promise<void>
 	$nextTick: () => Promise<void>
@@ -345,6 +352,120 @@ describe('Validation.vue - Business Logic', () => {
 		})
 	})
 
+	describe('document validation summary', () => {
+		it('shows info when no digital signatures are present', () => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [],
+				files: [],
+			})).toEqual({
+				message: 'No digital signatures were found in this document',
+				type: 'info',
+			})
+		})
+
+		it('shows warning when the document was modified after signing', () => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [{
+					signature_validation: { id: 1 },
+					document_modification_state: 'trailing_data',
+					modification_validation: { valid: true, status: 2 },
+				}],
+				files: [],
+			})).toEqual({
+				message: 'The document was modified after signing',
+				type: 'warning',
+			})
+		})
+
+		it('shows error when changes violate document certification', () => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [{
+					signature_validation: { id: 1 },
+					document_modification_state: 'trailing_data',
+					modification_validation: { valid: false, status: 3 },
+				}],
+				files: [],
+			})).toEqual({
+				message: 'The document contains changes that invalidate its certification',
+				type: 'error',
+			})
+		})
+
+		it.each([
+			'invalid_byte_range',
+			'invalid_eof_boundary',
+		])('shows error when the PDF signature structure is %s', (state) => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [{
+					signature_validation: { id: 1 },
+					document_modification_state: state,
+				}],
+				files: [],
+			})).toEqual({
+				message: 'One or more digital signatures are invalid',
+				type: 'error',
+			})
+		})
+
+		it('keeps the legacy modification flag as fallback when no structured state is available', () => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [{
+					signature_validation: { id: 1 },
+					modifications: { modified: true },
+				}],
+				files: [],
+			})).toEqual({
+				message: 'The document was modified after signing',
+				type: 'warning',
+			})
+		})
+
+		it('shows error when a digital signature is invalid', () => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [{
+					signature_validation: { id: 3 },
+					document_modification_state: 'unchanged',
+				}],
+				files: [],
+			})).toEqual({
+				message: 'One or more digital signatures are invalid',
+				type: 'error',
+			})
+		})
+
+		it('does not treat a previous signature revision as a document modification', () => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [
+					{
+						signature_validation: { id: 1 },
+						modifications: { modified: true },
+					},
+					{
+						signature_validation: { id: 1 },
+						document_modification_state: 'unchanged',
+						modifications: { modified: true },
+					},
+				],
+				files: [],
+			})).toEqual({
+				message: 'This document is valid',
+				type: 'success',
+			})
+		})
+
+		it('shows success when the signed document is unchanged', () => {
+			expect(wrapper.vm.getDocumentValidationSummary({
+				signers: [{
+					signature_validation: { id: 1 },
+					document_modification_state: 'unchanged',
+				}],
+				files: [],
+			})).toEqual({
+				message: 'This document is valid',
+				type: 'success',
+			})
+		})
+	})
 	describe('getValidityStatus method', () => {
 		it('returns unknown when valid_to is missing', () => {
 			const signer = {}
@@ -658,6 +779,90 @@ describe('Validation.vue - Business Logic', () => {
 			}) as unknown as ValidationWrapper
 			expect(localWrapper.vm.isAsyncSigning).toBe(false)
 			expect(localWrapper.vm.shouldFireAsyncConfetti).toBe(false)
+		})
+	})
+
+	describe('post-sign redirect initialization', () => {
+		const UUID = '550e8400-e29b-41d4-a716-446655440000'
+		const SIGNED_STATUS = 3
+		const SIGNER_SIGNED_STATUS = 2
+
+		const createLoadedValidationDocument = (patch: Record<string, unknown> = {}) => ({
+			id: 100,
+			uuid: UUID,
+			name: 'contract.pdf',
+			statusText: 'Signed',
+			nodeId: 100,
+			nodeType: 'file',
+			signatureFlow: 'none',
+			docmdpLevel: 0,
+			filesCount: 1,
+			files: [],
+			totalPages: 1,
+			size: 10,
+			pdfVersion: '1.7',
+			created_at: '2026-01-01T00:00:00Z',
+			requested_by: { userId: 'creator-user', displayName: 'Creator User' },
+			status: SIGNED_STATUS,
+			signers: [{
+				signRequestId: 1,
+				displayName: 'Signer',
+				email: 'signer@example.com',
+				signed: '2025-01-01T00:00:00Z',
+				status: SIGNER_SIGNED_STATUS,
+				statusText: 'Signed',
+				description: null,
+				request_sign_date: '2026-01-01T00:00:00Z',
+				me: true,
+				visibleElements: [],
+			}],
+			...patch,
+		})
+
+		it('uses post-sign refresh with cache busting after a sync sign redirect', async () => {
+			history.replaceState({ isAfterSigned: true }, '')
+			vi.mocked(axios.get).mockResolvedValue({
+				data: {
+					ocs: {
+						data: createLoadedValidationDocument(),
+					},
+				},
+			})
+
+			wrapper.vm.initializeValidationForRoute(UUID)
+
+			await vi.waitFor(() => expect(wrapper.vm.hasInfo).toBe(true))
+			expect(vi.mocked(axios.get).mock.calls[0]?.[0]).toContain('_t=')
+		})
+
+		it('retries validation with force refresh after a sync sign redirect', async () => {
+			history.replaceState({ isAfterSigned: true }, '')
+
+			let callCount = 0
+			vi.mocked(axios.get).mockImplementation(() => {
+				callCount += 1
+				if (callCount === 1) {
+					return Promise.reject({
+						response: {
+							status: 500,
+							data: { ocs: { data: {} } },
+						},
+					})
+				}
+				return Promise.resolve({
+					data: {
+						ocs: {
+							data: createLoadedValidationDocument(),
+						},
+					},
+				})
+			})
+
+			wrapper.vm.initializeValidationForRoute(UUID)
+
+			await vi.waitFor(() => expect(callCount).toBeGreaterThan(1), { timeout: 5000 })
+			expect(wrapper.vm.hasInfo).toBe(true)
+			expect(wrapper.vm.validationErrorMessage).toBeNull()
 		})
 	})
 

@@ -13,7 +13,6 @@ use DateTimeInterface;
 use Exception;
 use InvalidArgumentException;
 use OC\AppFramework\Http as AppFrameworkHttp;
-use OC\User\NoUserException;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\BackgroundJob\SignSingleFileJob;
 use OCA\Libresign\DataObjects\VisibleElementAssoc;
@@ -35,11 +34,11 @@ use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Handler\FooterHandler;
 use OCA\Libresign\Handler\PdfTk\Pdf;
+use OCA\Libresign\Handler\SignEngine\ISignEngineHandler;
 use OCA\Libresign\Handler\SignEngine\Pkcs12Handler;
 use OCA\Libresign\Handler\SignEngine\SignEngineFactory;
 use OCA\Libresign\Handler\SignEngine\SignEngineHandler;
 use OCA\Libresign\Helper\JSActions;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Service\Envelope\EnvelopeStatusDeterminer;
 use OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod;
 use OCA\Libresign\Service\IdentifyMethod\SignatureMethod\IToken;
@@ -49,13 +48,15 @@ use OCA\Libresign\Service\Policy\Provider\Footer\FooterPolicy;
 use OCA\Libresign\Service\Policy\Provider\Footer\FooterPolicyValue;
 use OCA\Libresign\Service\SignRequest\SignRequestService;
 use OCA\Libresign\Service\SignRequest\StatusService;
+use OCA\Libresign\Service\Validation\IdentityDocumentValidator;
+use OCA\Libresign\Service\Validation\SignerValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Db\MultipleObjectsReturnedException;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\BackgroundJob\IJobList;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\File;
-use OCP\Files\IRootFolder;
 use OCP\Files\NotPermittedException;
 use OCP\Http\Client\IClientService;
 use OCP\IAppConfig;
@@ -67,6 +68,7 @@ use OCP\IUser;
 use OCP\IUserSession;
 use OCP\Security\ICredentialsManager;
 use OCP\Security\ISecureRandom;
+use OCP\User\Exceptions\UserNotFoundException;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Sabre\DAV\UUIDUtil;
@@ -85,7 +87,7 @@ class SignFileService {
 	private string $userUniqueIdentifier = '';
 	private string $friendlyName = '';
 	private ?IUser $user = null;
-	private ?SignEngineHandler $engine = null;
+	private ?ISignEngineHandler $engine = null;
 
 	public function __construct(
 		protected IL10N $l10n,
@@ -97,9 +99,10 @@ class SignFileService {
 		private IClientService $client,
 		protected LoggerInterface $logger,
 		private IAppConfig $appConfig,
-		protected ValidateHelper $validateHelper,
+		protected IdentityDocumentValidator $identityDocumentValidator,
+		protected SigningRequestValidator $signingRequestValidator,
+		protected SignerValidator $signerValidator,
 		private SignerElementsService $signerElementsService,
-		private IRootFolder $root,
 		private IUserSession $userSession,
 		private IDateTimeZone $dateTimeZone,
 		private FileElementMapper $fileElementMapper,
@@ -950,7 +953,7 @@ class SignFileService {
 		$this->eventDispatcher->dispatchTyped($event);
 	}
 
-	protected function identifyEngine(File $file): SignEngineHandler {
+	protected function identifyEngine(File $file): ISignEngineHandler {
 		return $this->signEngineFactory->resolve($file->getExtension());
 	}
 
@@ -1060,7 +1063,11 @@ class SignFileService {
 		}
 
 		if (isset($metadata['geolocation']) && is_array($metadata['geolocation'])) {
-			$patch['geolocation'] = $metadata['geolocation'];
+			$existingMetadata = $this->signRequest->getMetadata() ?? [];
+			$existingGeolocation = is_array($existingMetadata['geolocation'] ?? null)
+				? $existingMetadata['geolocation']
+				: [];
+			$patch['geolocation'] = array_merge($existingGeolocation, $metadata['geolocation']);
 		}
 
 		if ($patch === []) {
@@ -1104,6 +1111,10 @@ class SignFileService {
 
 	private function evaluateStatusFromSigners(): ?int {
 		$signers = $this->excludeIdDocUploaderPlaceholder($this->getSigners());
+		$signers = array_values(array_filter(
+			$signers,
+			static fn (SignRequestEntity $signer): bool => !$signer->isObserver(),
+		));
 
 		$total = count($signers);
 
@@ -1225,7 +1236,7 @@ class SignFileService {
 		return strcasecmp($file->getExtension(), 'pdf') === 0;
 	}
 
-	protected function getEngine(): SignEngineHandler {
+	protected function getEngine(): ISignEngineHandler {
 		if (!$this->engine) {
 			$originalFile = $this->getFileToSign();
 			$this->engine = $this->identifyEngine($originalFile);
@@ -1288,7 +1299,6 @@ class SignFileService {
 		SignRequestEntity $signRequest,
 		string $identifyMethodName,
 		string $signMethodName,
-		string $identify = '',
 	): void {
 		$identifyMethods = $this->identifyMethodService->getIdentifyMethodsFromSignRequestId($signRequest->getId());
 		if (empty($identifyMethods[$identifyMethodName])) {
@@ -1303,8 +1313,7 @@ class SignFileService {
 				continue;
 			}
 			/** @var IToken $signatureMethod */
-			$identifier = $identify ?: $identifyMethod->getEntity()->getIdentifierValue();
-			$signatureMethod->requestCode($identifier, $identifyMethod->getEntity()->getIdentifierKey());
+			$signatureMethod->requestCode();
 			return;
 		}
 		// TRANSLATORS Error shown when sending a signing verification code is disabled by configuration.
@@ -1312,7 +1321,7 @@ class SignFileService {
 	}
 
 	private function getOrCreateApproverSignRequest(FileEntity $file, IUser $user): ?SignRequestEntity {
-		if (!$this->validateHelper->userCanApproveValidationDocuments($user, false)) {
+		if (!$this->identityDocumentValidator->userCanApproveValidationDocuments($user, false)) {
 			return null;
 		}
 
@@ -1371,7 +1380,7 @@ class SignFileService {
 	}
 
 	public function getSignRequestToSign(FileEntity $libresignFile, ?string $signRequestUuid, ?IUser $user): SignRequestEntity {
-		$this->validateHelper->fileCanBeSigned($libresignFile);
+		$this->signingRequestValidator->fileCanBeSigned($libresignFile);
 		try {
 			if (!empty($signRequestUuid)) {
 				$signRequest = $this->getSignRequestByUuid($signRequestUuid);
@@ -1515,21 +1524,17 @@ class SignFileService {
 
 	protected function getNodeByIdUsingUid(string $uid, int $nodeId): File {
 		try {
-			$userFolder = $this->root->getUserFolder($uid);
-		} catch (NoUserException $e) {
-			$this->logger->error('[file-access] NoUserException for uid={uid}', ['uid' => $uid]);
+			$fileToSign = $this->folderService->getReadableNodeById($uid, $nodeId);
+		} catch (UserNotFoundException) {
+			$this->logger->error('[file-access] UserNotFoundException for uid={uid}', ['uid' => $uid]);
 			// TRANSLATORS Error shown when the Nextcloud user linked to the signer cannot be found.
 			throw new LibresignException($this->l10n->t('User not found.'));
-		} catch (NotPermittedException $e) {
+		} catch (NotPermittedException) {
 			$this->logger->error('[file-access] NotPermittedException for uid={uid}', ['uid' => $uid]);
 			// TRANSLATORS Permission error shown when the current user cannot perform the requested signing action.
 			throw new LibresignException($this->l10n->t('You do not have permission for this action.'));
-		}
-
-		try {
-			$fileToSign = $userFolder->getFirstNodeById($nodeId);
 		} catch (\Throwable $e) {
-			$this->logger->error('[file-access] Failed getFirstNodeById - nodeId={nodeId} error={error}', [
+			$this->logger->error('[file-access] Failed to resolve node - nodeId={nodeId} error={error}', [
 				'nodeId' => $nodeId,
 				'error' => $e->getMessage(),
 			]);
@@ -1560,9 +1565,7 @@ class SignFileService {
 		}
 
 		try {
-			$userFolder = $this->root->getUserFolder($uid);
-			$node = $userFolder->getFirstNodeById($nodeId);
-			return $node instanceof File;
+			return $this->folderService->getReadableNodeById($uid, $nodeId) instanceof File;
 		} catch (\Throwable $e) {
 			$this->logger->warning('[verify-file] File not accessible - nodeId={nodeId} uid={uid} error={error}', [
 				'nodeId' => $nodeId,
@@ -1602,8 +1605,7 @@ class SignFileService {
 		$uniqueFilename = substr((string)$filename, 0, -strlen($extension) - 1) . '_' . $fileId . '.' . $extension;
 
 		try {
-			/** @var \OCP\Files\Folder */
-			$parentFolder = $this->root->getUserFolder($ownerUid)->getFirstNodeById($originalFile->getParentId());
+			$parentFolder = $originalFile->getParent();
 
 			$this->createdSignedFile = $this->runWithVolatileActiveUser(
 				$owner,
@@ -1623,7 +1625,7 @@ class SignFileService {
 	 * @throws DoesNotExistException
 	 */
 	public function getSignRequestByUuid(string $uuid): SignRequestEntity {
-		$this->validateHelper->validateUuidFormat($uuid);
+		$this->signerValidator->validateUuidFormat($uuid);
 		return $this->signRequestMapper->getByUuid($uuid);
 	}
 
@@ -1661,7 +1663,7 @@ class SignFileService {
 						'errors' => [['message' => $this->l10n->t('File not found')]],
 					]), AppFrameworkHttp::STATUS_NOT_FOUND);
 				}
-				$file = $this->root->getUserFolder($child->getUserId())->getFirstNodeById($nodeId);
+				$file = $this->folderService->getReadableNodeById($child->getUserId(), $nodeId);
 				if ($file instanceof File) {
 					$files[] = $file;
 				}
@@ -1691,11 +1693,11 @@ class SignFileService {
 	}
 
 	public function validateSigner(string $uuid, ?IUser $user = null): void {
-		$this->validateHelper->validateSigner($uuid, $user);
+		$this->signerValidator->validateSigner($uuid, $user);
 	}
 
 	public function validateRenewSigner(string $uuid, ?IUser $user = null): void {
-		$this->validateHelper->validateRenewSigner($uuid, $user);
+		$this->signerValidator->validateRenewSigner($uuid, $user);
 	}
 
 	public function getSignerData(?IUser $user, ?SignRequestEntity $signRequest = null): array {

@@ -12,12 +12,18 @@ namespace OCA\Libresign\Tests\Unit\Controller;
 use OCA\Libresign\Controller\RequestSignatureController;
 use OCA\Libresign\Db\File as FileEntity;
 use OCA\Libresign\Db\FileMapper;
+use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Exception\LibresignException;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Service\File\FileListService;
+use OCA\Libresign\Service\FolderService;
 use OCA\Libresign\Service\RequestSignatureService;
 use OCA\Libresign\Service\RequestSignatureWorkflowService;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\SignerValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
+use OCA\Libresign\Service\Validation\VisibleElementValidator;
 use OCP\AppFramework\Http;
+use OCP\Files\IMimeTypeDetector;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\IUser;
@@ -32,7 +38,9 @@ final class RequestSignatureControllerTest extends TestCase {
 	private IL10N&MockObject $l10n;
 	private IUserSession&MockObject $userSession;
 	private FileListService&MockObject $fileListService;
-	private ValidateHelper&MockObject $validateHelper;
+	private SigningRequestValidator&MockObject $signingRequestValidator;
+	private SignerValidator&MockObject $signerValidator;
+	private VisibleElementValidator&MockObject $visibleElementValidator;
 	private RequestSignatureService&MockObject $requestSignatureService;
 	private FileMapper&MockObject $fileMapper;
 	private RequestSignatureWorkflowService $requestSignatureWorkflowService;
@@ -43,7 +51,9 @@ final class RequestSignatureControllerTest extends TestCase {
 		$this->l10n = $this->createMock(IL10N::class);
 		$this->userSession = $this->createMock(IUserSession::class);
 		$this->fileListService = $this->createMock(FileListService::class);
-		$this->validateHelper = $this->createMock(ValidateHelper::class);
+		$this->signingRequestValidator = $this->createMock(SigningRequestValidator::class);
+		$this->signerValidator = $this->createMock(SignerValidator::class);
+		$this->visibleElementValidator = $this->createMock(VisibleElementValidator::class);
 		$this->requestSignatureService = $this->createMock(RequestSignatureService::class);
 		$this->fileMapper = $this->createMock(FileMapper::class);
 		$this->user = $this->createMock(IUser::class);
@@ -53,8 +63,17 @@ final class RequestSignatureControllerTest extends TestCase {
 		$this->requestSignatureWorkflowService = new RequestSignatureWorkflowService(
 			$this->l10n,
 			$this->requestSignatureService,
-			$this->validateHelper,
+			$this->signingRequestValidator,
+			$this->signerValidator,
+			$this->visibleElementValidator,
 			$this->fileMapper,
+			new FileInputValidator(
+				$this->l10n,
+				$this->createMock(SignRequestMapper::class),
+				$this->fileMapper,
+				$this->createMock(IMimeTypeDetector::class),
+				$this->createMock(FolderService::class),
+			),
 		);
 
 		$this->controller = new RequestSignatureController(
@@ -62,7 +81,7 @@ final class RequestSignatureControllerTest extends TestCase {
 			$this->l10n,
 			$this->userSession,
 			$this->fileListService,
-			$this->validateHelper,
+			$this->signingRequestValidator,
 			$this->requestSignatureService,
 			$this->requestSignatureWorkflowService,
 		);
@@ -259,11 +278,15 @@ final class RequestSignatureControllerTest extends TestCase {
 		$file->setId(20);
 		$file->setParentFileId(88);
 
-		$this->validateHelper
+		$this->signingRequestValidator
 			->expects($this->once())
 			->method('validateExistingFile');
 
-		$this->validateHelper
+		$this->signingRequestValidator
+			->expects($this->once())
+			->method('validateWorkflowIsNotClosedByUuid');
+
+		$this->signingRequestValidator
 			->expects($this->once())
 			->method('validateFileStatus')
 			->with($this->callback(static function (array $payload) use ($expectStatusKey, $status): bool {
@@ -277,7 +300,7 @@ final class RequestSignatureControllerTest extends TestCase {
 				return true;
 			}));
 
-		$this->validateHelper
+		$this->signerValidator
 			->expects($this->once())
 			->method('validateIdentifySigners');
 

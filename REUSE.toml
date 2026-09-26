@@ -25,6 +25,7 @@ path = [
     ".github/ISSUE_TEMPLATE/2_feature_request.md",
     ".github/ISSUE_TEMPLATE/feature_request.md",
     ".github/pull_request_template.md",
+    ".github/workflows/*.patch",
     ".prettierrc",
     ".tx/config",
     "img/*.png",
@@ -68,6 +69,16 @@ path = [
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2020-2024 LibreCode coop and contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = [
+    "tests/php/fixtures/geoip/GeoIP2-City-Test.mmdb",
+    "tests/php/fixtures/geoip/LICENSE-APACHE",
+    "tests/php/fixtures/geoip/README.md"
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2013-2024 MaxMind, Inc."
+SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
 path = "src/assets/fonts/DancingScript/DancingScript.ttf"

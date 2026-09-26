@@ -17,6 +17,7 @@ import { identificationDocumentsRealDefinition } from './identification-document
 import { identifyMethodsRealDefinition } from './identify-methods/realDefinition'
 import { legalInformationRealDefinition } from './legal-information/realDefinition'
 import { mailSenderStrategyRealDefinition } from './mail-sender-strategy/realDefinition'
+import { observerProfileRealDefinition } from './observer-profile/realDefinition'
 import type { RealPolicySettingDefinition } from './realTypes'
 import { reminderRealDefinition } from './reminder/realDefinition'
 import { requestSignGroupsRealDefinition } from './request-sign-groups/realDefinition'
@@ -24,6 +25,7 @@ import { signatureFlowRealDefinition } from './signature-flow/realDefinition'
 import { signatureFooterRealDefinition } from './signature-footer/realDefinition'
 import { signatureHashAlgorithmRealDefinition } from './signature-hash-algorithm/realDefinition'
 import { signatureTextRealDefinition } from './signature-text/realDefinition'
+import { signerGeolocationRealDefinition } from './signer-geolocation/realDefinition'
 import {
 	signingModeRealDefinition,
 } from './signing-mode/realDefinitions'
@@ -35,6 +37,7 @@ export const realDefinitions = {
 	groups_request_sign: { ...requestSignGroupsRealDefinition, category: 'who-can-sign' },
 	identification_documents: { ...identificationDocumentsRealDefinition, category: 'who-can-sign' },
 	identify_methods: { ...identifyMethodsRealDefinition, category: 'who-can-sign' },
+	enable_observer_profile: { ...observerProfileRealDefinition, category: 'who-can-sign' },
 
 	// 2. How signing works
 	signature_flow: { ...signatureFlowRealDefinition, category: 'how-signing-works' },
@@ -47,6 +50,7 @@ export const realDefinitions = {
 
 	// 4. What gets recorded
 	collect_metadata: { ...collectMetadataRealDefinition, category: 'what-gets-recorded' },
+	signer_device_geolocation: { ...signerGeolocationRealDefinition, category: 'what-gets-recorded' },
 	legal_information: { ...legalInformationRealDefinition, category: 'what-gets-recorded' },
 
 	// 5. Time & limits

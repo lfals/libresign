@@ -15,11 +15,15 @@ use OCA\Libresign\Db\IdDocsMapper;
 use OCA\Libresign\Db\IdentifyMethodMapper;
 use OCA\Libresign\Db\SignRequest;
 use OCA\Libresign\Db\SignRequestMapper;
-use OCA\Libresign\Helper\ValidateHelper;
+use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Service\IdDocsService;
 use OCA\Libresign\Service\RequestSignatureService;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\IdentityDocumentValidator;
 use OCP\IAppConfig;
 use OCP\IL10N;
+use OCP\IUser;
+use OCP\IUserManager;
 use PHPUnit\Framework\MockObject\MockObject;
 
 /**
@@ -33,10 +37,12 @@ final class IdDocsServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private FileMapper&MockObject $fileMapper;
 	private SignRequestMapper&MockObject $signRequestMapper;
 	private IdentifyMethodMapper&MockObject $identifyMethodMapper;
-	private ValidateHelper&MockObject $validateHelper;
+	private FileInputValidator&MockObject $fileInputValidator;
+	private IdentityDocumentValidator&MockObject $identityDocumentValidator;
 	private RequestSignatureService&MockObject $requestSignatureService;
 	private TimeFactory&MockObject $timeFactory;
 	private IAppConfig&MockObject $appConfig;
+	private IUserManager&MockObject $userManager;
 
 	public function setUp(): void {
 		parent::setUp();
@@ -49,17 +55,20 @@ final class IdDocsServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->fileMapper = $this->createMock(FileMapper::class);
 		$this->signRequestMapper = $this->createMock(SignRequestMapper::class);
 		$this->identifyMethodMapper = $this->createMock(IdentifyMethodMapper::class);
-		$this->validateHelper = $this->createMock(ValidateHelper::class);
+		$this->fileInputValidator = $this->createMock(FileInputValidator::class);
+		$this->identityDocumentValidator = $this->createMock(IdentityDocumentValidator::class);
 		$this->requestSignatureService = $this->createMock(RequestSignatureService::class);
 		$this->timeFactory = $this->createMock(TimeFactory::class);
 		$this->appConfig = $this->createMock(IAppConfig::class);
+		$this->userManager = $this->createMock(IUserManager::class);
 	}
 
 	private function getIdDocsService(): IdDocsService {
 		return new IdDocsService(
 			$this->l10n,
 			$this->fileTypeMapper,
-			$this->validateHelper,
+			$this->fileInputValidator,
+			$this->identityDocumentValidator,
 			$this->requestSignatureService,
 			$this->idDocsMapper,
 			$this->fileMapper,
@@ -67,14 +76,39 @@ final class IdDocsServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			$this->identifyMethodMapper,
 			$this->timeFactory,
 			$this->appConfig,
+			$this->userManager,
 		);
+	}
+
+	public function testValidateIdDocsUsesFocusedValidators(): void {
+		$user = $this->createMock(\OCP\IUser::class);
+		$user->method('getUID')->willReturn('user1');
+		$file = [
+			'type' => 'IDENTIFICATION',
+			'file' => ['base64' => 'encoded'],
+		];
+
+		$this->fileTypeMapper->method('getTypes')->willReturn([
+			'IDENTIFICATION' => [],
+		]);
+		$this->identityDocumentValidator->expects($this->once())
+			->method('validateFileTypeExists')
+			->with('IDENTIFICATION');
+		$this->fileInputValidator->expects($this->once())
+			->method('validateNewFile')
+			->with($file, FileInputValidator::TYPE_ACCOUNT_DOCUMENT, $user);
+		$this->identityDocumentValidator->expects($this->once())
+			->method('validateUserHasNoFileWithThisType')
+			->with('user1', 'IDENTIFICATION');
+
+		$this->getIdDocsService()->validateIdDocs([$file], $user);
 	}
 
 	public function testDeleteIdDocAsApproverBypassesOwnershipCheck(): void {
 		$user = $this->createMock(\OCP\IUser::class);
 		$user->method('getUID')->willReturn('approver1');
 
-		$this->validateHelper->method('userCanApproveValidationDocuments')
+		$this->identityDocumentValidator->method('userCanApproveValidationDocuments')
 			->with($user, false)
 			->willReturn(true);
 
@@ -101,11 +135,11 @@ final class IdDocsServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$user = $this->createMock(\OCP\IUser::class);
 		$user->method('getUID')->willReturn('user1');
 
-		$this->validateHelper->method('userCanApproveValidationDocuments')
+		$this->identityDocumentValidator->method('userCanApproveValidationDocuments')
 			->with($user, false)
 			->willReturn(false);
 
-		$this->validateHelper->expects($this->once())
+		$this->identityDocumentValidator->expects($this->once())
 			->method('validateIdDocIsOwnedByUser')
 			->with(123, 'user1');
 
@@ -129,7 +163,7 @@ final class IdDocsServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$signRequest = new SignRequest();
 		$signRequest->setId(55);
 
-		$this->validateHelper->expects($this->once())
+		$this->identityDocumentValidator->expects($this->once())
 			->method('validateIdDocBelongsToSignRequest')
 			->with(123, 55);
 
@@ -156,7 +190,7 @@ final class IdDocsServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$signRequest = new SignRequest();
 		$signRequest->setId(55);
 
-		$this->validateHelper->method('validateIdDocBelongsToSignRequest')
+		$this->identityDocumentValidator->method('validateIdDocBelongsToSignRequest')
 			->with(123, 55)
 			->willThrowException(new \OCA\Libresign\Exception\LibresignException('Not allowed'));
 
@@ -165,5 +199,205 @@ final class IdDocsServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 
 		$service = $this->getIdDocsService();
 		$service->deleteIdDocBySignRequest(123, $signRequest);
+	}
+	public function testAddFilesToDocumentFolderStoresFilesUnderTheOwnerOfTheSignedFile(): void {
+		$signRequest = new SignRequest();
+		$signRequest->setId(55);
+		$signRequest->setFileId(10);
+
+		$signedFile = new \OCA\Libresign\Db\File();
+		$signedFile->setUserId('owner');
+		$this->fileMapper->method('getById')
+			->with(10)
+			->willReturn($signedFile);
+
+		$owner = $this->createMock(IUser::class);
+		$this->userManager->method('get')
+			->with('owner')
+			->willReturn($owner);
+
+		$this->fileTypeMapper->method('getTypes')
+			->willReturn(['IDENTIFICATION' => ['type' => 'IDENTIFICATION']]);
+
+		$savedFile = new \OCA\Libresign\Db\File();
+		$savedFile->setId(77);
+		$this->requestSignatureService->expects($this->once())
+			->method('saveFile')
+			->with($this->callback(function (array $data) use ($owner, $signRequest): bool {
+				$this->assertSame($owner, $data['userManager']);
+				$this->assertSame($signRequest, $data['signRequest']);
+				$this->assertSame('id-front.pdf', $data['name']);
+				return true;
+			}))
+			->willReturn($savedFile);
+
+		$this->idDocsMapper->expects($this->once())
+			->method('save')
+			->with(77, 55, null, 'IDENTIFICATION');
+
+		$service = $this->getIdDocsService();
+		$service->addFilesToDocumentFolder(
+			[['type' => 'IDENTIFICATION', 'name' => 'id-front.pdf', 'base64' => 'ZmFrZQ==']],
+			$signRequest,
+		);
+	}
+
+	/**
+	 * The `file` entry is the same HTTP payload as the signature request's,
+	 * so its node id is normalized at this boundary too and reaches
+	 * saveFile() as an int.
+	 */
+	public function testAddFilesToDocumentFolderNormalizesTheNodeIdOfEachFile(): void {
+		$signRequest = new SignRequest();
+		$signRequest->setId(55);
+		$signRequest->setFileId(10);
+		$this->fileMapper->method('getById')->willThrowException(new \OCP\AppFramework\Db\DoesNotExistException('no'));
+		$this->fileTypeMapper->method('getTypes')
+			->willReturn(['IDENTIFICATION' => ['type' => 'IDENTIFICATION']]);
+		$this->fileInputValidator->expects($this->once())
+			->method('normalizeNodeId')
+			->with(['nodeId' => '9007199254740993'], FileInputValidator::TYPE_ACCOUNT_DOCUMENT)
+			->willReturn(['nodeId' => 9007199254740993]);
+
+		$savedFile = new \OCA\Libresign\Db\File();
+		$savedFile->setId(77);
+		$this->requestSignatureService->expects($this->once())
+			->method('saveFile')
+			->with($this->callback(function (array $data): bool {
+				$this->assertSame(9007199254740993, $data['file']['nodeId']);
+				return true;
+			}))
+			->willReturn($savedFile);
+
+		$service = $this->getIdDocsService();
+		$service->addFilesToDocumentFolder(
+			[['type' => 'IDENTIFICATION', 'name' => 'id-front.pdf', 'file' => ['nodeId' => '9007199254740993']]],
+			$signRequest,
+		);
+	}
+
+	public function testAddIdDocsReportsAnInvalidNodeIdWithTheIndexOfTheFile(): void {
+		$user = $this->createMock(IUser::class);
+		$this->fileInputValidator->expects($this->exactly(2))
+			->method('normalizeNodeId')
+			->with($this->anything(), FileInputValidator::TYPE_ACCOUNT_DOCUMENT)
+			->willReturnCallback(static function (array $file): array {
+				if (($file['nodeId'] ?? null) === 'temp-node') {
+					throw new LibresignException('File type: Account document. Invalid fileID.');
+				}
+				return $file;
+			});
+		$this->requestSignatureService->expects($this->never())->method('saveFile');
+
+		$service = $this->getIdDocsService();
+		try {
+			$service->addIdDocs(
+				[
+					['type' => 'IDENTIFICATION', 'file' => ['base64' => 'ZmFrZQ==']],
+					['type' => 'IDENTIFICATION', 'file' => ['nodeId' => 'temp-node']],
+				],
+				$user,
+			);
+			$this->fail('An invalid node id must be rejected');
+		} catch (LibresignException $e) {
+			$this->assertSame(
+				['type' => 'danger', 'file' => 1, 'message' => 'File type: Account document. Invalid fileID.'],
+				json_decode($e->getMessage(), true),
+			);
+		}
+	}
+
+	public function testAddFilesToDocumentFolderWithoutResolvableOwnerKeepsCurrentBehaviour(): void {
+		$signRequest = new SignRequest();
+		$signRequest->setId(55);
+		$signRequest->setFileId(10);
+
+		$signedFile = new \OCA\Libresign\Db\File();
+		$signedFile->setUserId('deleted-owner');
+		$this->fileMapper->method('getById')
+			->with(10)
+			->willReturn($signedFile);
+
+		$this->userManager->method('get')
+			->with('deleted-owner')
+			->willReturn(null);
+
+		$this->fileTypeMapper->method('getTypes')
+			->willReturn(['IDENTIFICATION' => ['type' => 'IDENTIFICATION']]);
+
+		$savedFile = new \OCA\Libresign\Db\File();
+		$savedFile->setId(77);
+		$this->requestSignatureService->expects($this->once())
+			->method('saveFile')
+			->with($this->callback(function (array $data): bool {
+				$this->assertArrayNotHasKey('userManager', $data);
+				return true;
+			}))
+			->willReturn($savedFile);
+
+		$this->idDocsMapper->expects($this->once())
+			->method('save')
+			->with(77, 55, null, 'IDENTIFICATION');
+
+		$service = $this->getIdDocsService();
+		$service->addFilesToDocumentFolder(
+			[['type' => 'IDENTIFICATION', 'base64' => 'ZmFrZQ==']],
+			$signRequest,
+		);
+	}
+
+	public function testAddFilesToDocumentFolderWithoutSignedFileRowKeepsCurrentBehaviour(): void {
+		$signRequest = new SignRequest();
+		$signRequest->setId(55);
+		$signRequest->setFileId(10);
+
+		$this->fileMapper->method('getById')
+			->with(10)
+			->willThrowException(new \OCP\AppFramework\Db\DoesNotExistException('missing'));
+
+		$this->userManager->expects($this->never())
+			->method('get');
+
+		$this->fileTypeMapper->method('getTypes')
+			->willReturn(['IDENTIFICATION' => ['type' => 'IDENTIFICATION']]);
+
+		$savedFile = new \OCA\Libresign\Db\File();
+		$savedFile->setId(77);
+		$this->requestSignatureService->expects($this->once())
+			->method('saveFile')
+			->with($this->callback(function (array $data): bool {
+				$this->assertArrayNotHasKey('userManager', $data);
+				return true;
+			}))
+			->willReturn($savedFile);
+
+		$service = $this->getIdDocsService();
+		$service->addFilesToDocumentFolder(
+			[['type' => 'IDENTIFICATION', 'base64' => 'ZmFrZQ==']],
+			$signRequest,
+		);
+	}
+
+	public function testAddFilesToDocumentFolderDoesNotHideUnexpectedFailuresWhenResolvingTheOwner(): void {
+		$signRequest = new SignRequest();
+		$signRequest->setId(55);
+		$signRequest->setFileId(10);
+
+		$this->fileMapper->method('getById')
+			->with(10)
+			->willThrowException(new \RuntimeException('database unavailable'));
+
+		$this->fileTypeMapper->method('getTypes')
+			->willReturn(['IDENTIFICATION' => ['type' => 'IDENTIFICATION']]);
+
+		$this->requestSignatureService->expects($this->never())
+			->method('saveFile');
+
+		$service = $this->getIdDocsService();
+		$this->expectException(\RuntimeException::class);
+		$service->addFilesToDocumentFolder(
+			[['type' => 'IDENTIFICATION', 'base64' => 'ZmFrZQ==']],
+			$signRequest,
+		);
 	}
 }

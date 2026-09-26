@@ -13,6 +13,7 @@ use OCA\Libresign\Db\File as FileEntity;
 use OCA\Libresign\Db\SignRequest;
 use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Events\SendSignNotificationEvent;
+use OCA\Libresign\Events\SignatureRejectedEvent;
 use OCA\Libresign\Events\SignedEvent;
 use OCA\Libresign\Events\SignRequestCanceledEvent;
 use OCA\Libresign\Service\AccountService;
@@ -44,7 +45,7 @@ class Listener implements IEventListener {
 
 	#[\Override]
 	public function handle(Event $event): void {
-		/** @var SendSignNotificationEvent|SignedEvent|SignRequestCanceledEvent $event */
+		/** @var SendSignNotificationEvent|SignedEvent|SignRequestCanceledEvent|SignatureRejectedEvent $event */
 		match ($event::class) {
 			SendSignNotificationEvent::class => $this->generateNewSignNotificationActivity(
 				$event->getSignRequest(),
@@ -57,6 +58,11 @@ class Listener implements IEventListener {
 				$event->getIdentifyMethod(),
 			),
 			SignRequestCanceledEvent::class => $this->generateCanceledActivity(
+				$event->getSignRequest(),
+				$event->getLibreSignFile(),
+				$event->getIdentifyMethod(),
+			),
+			SignatureRejectedEvent::class => $this->generateSignatureRejectedActivity(
 				$event->getSignRequest(),
 				$event->getLibreSignFile(),
 				$event->getIdentifyMethod(),
@@ -77,6 +83,9 @@ class Listener implements IEventListener {
 	): void {
 		$actor = $this->userSession->getUser();
 		if (!$actor instanceof IUser) {
+			return;
+		}
+		if ($identifyMethod->getName() !== 'account') {
 			return;
 		}
 		$actorId = $actor->getUID();
@@ -219,15 +228,70 @@ class Listener implements IEventListener {
 	}
 
 	/**
+	 * Register the rejection in the audit trail of the person who requested the signature.
+	 *
+	 * The actor is the signer, who may be an external person without a Nextcloud
+	 * account, so the requester is used as the activity author and affected user.
+	 */
+	protected function generateSignatureRejectedActivity(
+		SignRequest $signRequest,
+		FileEntity $libreSignFile,
+		IIdentifyMethod $identifyMethod,
+	): void {
+		$requesterId = $libreSignFile->getUserId();
+
+		$event = $this->activityManager->generateEvent();
+		try {
+			$event
+				->setApp(Application::APP_ID)
+				->setType(SignatureRejectedEvent::SIGNATURE_REJECTED)
+				->setAuthor($requesterId)
+				->setObject('signRequest', $signRequest->getId())
+				->setTimestamp($this->timeFactory->getTime())
+				->setAffectedUser($requesterId)
+				// Delivery through the Notification app is handled separately from the
+				// audit trail, so no notification is generated from this activity.
+				->setGenerateNotification(false);
+
+			$event->setSubject('signature_rejected', [
+				'file' => $this->getFileParameter($signRequest, $libreSignFile),
+				'signer' => $this->getUserParameter(
+					$identifyMethod->getEntity()->getIdentifierValue(),
+					$signRequest->getDisplayName(),
+				),
+				'signRequest' => [
+					'type' => 'sign-request',
+					'id' => (string)$signRequest->getId(),
+					'name' => $signRequest->getDisplayName(),
+				],
+			]);
+			$this->activityManager->publish($event);
+		} catch (UnknownActivityException $e) {
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
+			return;
+		}
+	}
+
+	/**
 	 * @return array{type: 'file', id: string, name: string, path: string, link: string}
 	 */
 	protected function getFileParameter(SignRequest $signRequest, FileEntity $libreSignFile): array {
+		if ($signRequest->isObserver()) {
+			$link = $this->url->linkToRouteAbsolute(
+				'libresign.page.indexFPath',
+				['path' => 'filelist/sign'],
+			);
+			$link .= '?uuid=' . urlencode($libreSignFile->getUuid());
+		} else {
+			$link = $this->url->linkToRouteAbsolute('libresign.page.sign', ['uuid' => $signRequest->getUuid()]);
+		}
+
 		return [
 			'type' => 'file',
 			'id' => (string)$libreSignFile->getNodeId(),
 			'name' => $libreSignFile->getName(),
 			'path' => $libreSignFile->getName(),
-			'link' => $this->url->linkToRouteAbsolute('libresign.page.sign', ['uuid' => $signRequest->getUuid()]),
+			'link' => $link,
 		];
 	}
 

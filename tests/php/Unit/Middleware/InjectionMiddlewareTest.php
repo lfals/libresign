@@ -13,7 +13,6 @@ use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Exception\PageException;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Middleware\Attribute\PrivateValidation;
 use OCA\Libresign\Middleware\Attribute\RequireSignRequestUuid;
 use OCA\Libresign\Middleware\InjectionMiddleware;
@@ -23,6 +22,8 @@ use OCA\Libresign\Service\Policy\PolicyService;
 use OCA\Libresign\Service\Policy\Provider\ValidationAccess\ValidationAccessPolicy;
 use OCA\Libresign\Service\SignFileService;
 use OCA\Libresign\Service\UuidResolverService;
+use OCA\Libresign\Service\Validation\SignerValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\JSONResponse;
@@ -31,11 +32,11 @@ use OCP\AppFramework\Http\TemplateResponse;
 use OCP\AppFramework\Services\IInitialState;
 use OCP\IL10N;
 use OCP\IRequest;
-use OCP\IServerContainer;
 use OCP\ISession;
 use OCP\IURLGenerator;
 use OCP\IUserSession;
 use PHPUnit\Framework\MockObject\MockObject;
+use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -67,7 +68,8 @@ final class InjectionMiddlewareTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private IRequest&MockObject $request;
 	private ISession&MockObject $session;
 	private IUserSession&MockObject $userSession;
-	private ValidateHelper&MockObject $validateHelper;
+	private SigningRequestValidator&MockObject $signingRequestValidator;
+	private SignerValidator&MockObject $signerValidator;
 	private SignRequestMapper&MockObject $signRequestMapper;
 	private CertificateEngineFactory $certificateEngineFactory;
 	private FileMapper&MockObject $fileMapper;
@@ -88,7 +90,8 @@ final class InjectionMiddlewareTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->request = $this->createMock(IRequest::class);
 		$this->session = $this->createMock(ISession::class);
 		$this->userSession = $this->createMock(IUserSession::class);
-		$this->validateHelper = $this->createMock(ValidateHelper::class);
+		$this->signingRequestValidator = $this->createMock(SigningRequestValidator::class);
+		$this->signerValidator = $this->createMock(SignerValidator::class);
 		$this->signRequestMapper = $this->createMock(SignRequestMapper::class);
 		$this->certificateEngineFactory = $this->createMock(CertificateEngineFactory::class);
 		$this->fileMapper = $this->createMock(FileMapper::class);
@@ -98,7 +101,7 @@ final class InjectionMiddlewareTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->initialStateService = new InitialStateService(
 			$this->createMock(LoggerInterface::class),
 			$this->createMock(Coordinator::class),
-			$this->createMock(IServerContainer::class)
+			$this->createMock(ContainerInterface::class)
 		);
 		$this->initialState = new InitialState($this->initialStateService, 'libresign');
 		$this->fileAccessService = $this->createMock(FileAccessService::class);
@@ -114,7 +117,8 @@ final class InjectionMiddlewareTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			$this->request,
 			$this->session,
 			$this->userSession,
-			$this->validateHelper,
+			$this->signingRequestValidator,
+			$this->signerValidator,
 			$this->signRequestMapper,
 			$this->certificateEngineFactory,
 			$this->fileMapper,

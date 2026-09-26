@@ -13,7 +13,7 @@ import type { IdentifyAccountRecord } from '../../../types'
 
 const signerSelectStub = {
 	name: 'SignerSelect',
-	props: ['placeholder', 'method'],
+	props: ['placeholder', 'method', 'participantRole'],
 	template: '<div class="signer-select-stub" />',
 }
 
@@ -43,6 +43,10 @@ type SignerToEdit = {
 	displayName?: string
 	description?: string
 	identifyMethods?: Array<{ method: string; value: string }>
+	deviceGeolocationRequired?: boolean
+	metadata?: {
+		deviceGeolocationRequirement?: string
+	}
 }
 
 type IdentifySignerVm = {
@@ -58,6 +62,8 @@ type IdentifySignerVm = {
 	displayName: string
 	description: string
 	enableCustomMessage: boolean
+	deviceGeolocationRequired: boolean
+	showGeolocationRequirementToggle: boolean
 	identify: string
 	identifyMethod?: IdentifyAccountRecord['method']
 	acceptsEmailNotifications?: boolean
@@ -78,8 +84,12 @@ type IdentifySignerWrapper = VueWrapper<any> & {
 }
 
 let filesStore: FilesStoreMock
+let policiesStore: { getEffectiveValue: ReturnType<typeof vi.fn> }
 vi.mock('../../../store/files.js', () => ({
 	useFilesStore: vi.fn(() => filesStore),
+}))
+vi.mock('../../../store/policies.ts', () => ({
+	usePoliciesStore: vi.fn(() => policiesStore),
 }))
 
 vi.mock('@nextcloud/l10n', () => globalThis.mockNextcloudL10n())
@@ -139,6 +149,9 @@ describe('IdentifySigner rules', () => {
 			saveOrUpdateSignatureRequest: vi.fn<(payload?: unknown) => Promise<Record<string, never>>>().mockResolvedValue({}),
 		}
 		;(useFilesStoreModule as unknown as { mockReturnValue: (store: FilesStoreMock) => void }).mockReturnValue(filesStore)
+		policiesStore = {
+			getEffectiveValue: vi.fn().mockReturnValue({ mode: 'disabled' }),
+		}
 
 		wrapper = createWrapper()
 	})
@@ -259,6 +272,15 @@ describe('IdentifySigner rules', () => {
 			wrapper.vm.onNameChange()
 
 			expect(wrapper.vm.nameHaveError).toBe(false)
+		})
+
+		it('shows observer-specific validation message', async () => {
+			await wrapper.setProps({ participantRole: 'observer' })
+			wrapper.vm.displayName = 'Jo'
+			wrapper.vm.onNameChange()
+
+			expect(wrapper.vm.nameHaveError).toBe(true)
+			expect(wrapper.vm.nameHelperText).toBe('Please enter observer name.')
 		})
 	})
 
@@ -417,6 +439,7 @@ describe('IdentifySigner rules', () => {
 					{
 						displayName: 'John Doe',
 						description: undefined,
+						participantRole: 'signer',
 						email: 'john@example.com',
 						status: 0,
 						statusText: 'Draft',
@@ -500,6 +523,50 @@ describe('IdentifySigner rules', () => {
 
 			await expect(wrapper.vm.saveSigner()).resolves.not.toThrow()
 			expect(showError).toHaveBeenCalled()
+		})
+
+		it('shows the API error from a 422 OCS response and keeps the modal open', async () => {
+			const { showError } = await import('@nextcloud/dialogs')
+			filesStore.saveOrUpdateSignatureRequest.mockRejectedValue({
+				response: {
+					status: 422,
+					data: {
+						ocs: {
+							data: {
+								message: 'Observer participants are not enabled',
+							},
+						},
+					},
+				},
+			})
+
+			wrapper.vm.identifyMethod = 'email'
+			wrapper.vm.identify = 'observer@example.com'
+			wrapper.vm.displayName = 'Observer'
+
+			await wrapper.vm.saveSigner()
+
+			expect(showError).toHaveBeenCalledWith('Observer participants are not enabled')
+			expect(filesStore.disableIdentifySigner).not.toHaveBeenCalled()
+			expect(wrapper.vm.identify).toBe('observer@example.com')
+		})
+
+		it('shows the API error from a failed save response and keeps the modal open', async () => {
+			const { showError } = await import('@nextcloud/dialogs')
+			filesStore.saveOrUpdateSignatureRequest.mockResolvedValue({
+				success: false,
+				message: 'Observer participants are not enabled',
+			})
+
+			wrapper.vm.identifyMethod = 'email'
+			wrapper.vm.identify = 'observer@example.com'
+			wrapper.vm.displayName = 'Observer'
+
+			await wrapper.vm.saveSigner()
+
+			expect(showError).toHaveBeenCalledWith('Observer participants are not enabled')
+			expect(filesStore.disableIdentifySigner).not.toHaveBeenCalled()
+			expect(wrapper.vm.identify).toBe('observer@example.com')
 		})
 	})
 
@@ -604,6 +671,130 @@ describe('IdentifySigner rules', () => {
 			const label = wrapper.vm.identifyMethodLabel
 
 			expect(label).toBe('')
+		})
+	})
+
+	describe('geolocation requirement toggle', () => {
+		it('hides the toggle when geolocation mode is disabled', () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'disabled' })
+			wrapper = createWrapper()
+
+			expect(wrapper.vm.showGeolocationRequirementToggle).toBe(false)
+		})
+
+		it('hides the toggle when geolocation mode is required', () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'required' })
+			wrapper = createWrapper()
+
+			expect(wrapper.vm.showGeolocationRequirementToggle).toBe(false)
+		})
+
+		it('shows the toggle when geolocation mode is optional', () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'optional' })
+			wrapper = createWrapper()
+
+			expect(wrapper.vm.showGeolocationRequirementToggle).toBe(true)
+			expect(wrapper.vm.deviceGeolocationRequired).toBe(false)
+		})
+
+		it('prefers the file policy snapshot over the current effective policy', () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'disabled' })
+			filesStore.getFile.mockReturnValue({
+				signers: [],
+				metadata: {
+					policy_snapshot: {
+						signer_device_geolocation: {
+							effectiveValue: { mode: 'optional' },
+							sourceScope: 'system',
+						},
+					},
+				},
+			})
+			wrapper = createWrapper()
+
+			expect(wrapper.vm.showGeolocationRequirementToggle).toBe(true)
+		})
+
+		it('falls back to the live policy when snapshot exists but device geolocation is absent', () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'optional' })
+			filesStore.getFile.mockReturnValue({
+				signers: [],
+				metadata: {
+					policy_snapshot: {
+						enable_observer_profile: {
+							effectiveValue: { enabled: true },
+							sourceScope: 'system',
+						},
+					},
+				},
+			})
+			wrapper = createWrapper()
+
+			expect(wrapper.vm.showGeolocationRequirementToggle).toBe(true)
+		})
+
+		it('keeps the toggle hidden when the file snapshot is disabled after a later optional policy change', () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'optional' })
+			filesStore.getFile.mockReturnValue({
+				signers: [],
+				metadata: {
+					policy_snapshot: {
+						signer_device_geolocation: {
+							effectiveValue: { mode: 'disabled' },
+							sourceScope: 'system',
+						},
+					},
+				},
+			})
+			wrapper = createWrapper()
+
+			expect(wrapper.vm.showGeolocationRequirementToggle).toBe(false)
+		})
+
+		it('persists deviceGeolocationRequired when optional mode is active', async () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'optional' })
+			wrapper = createWrapper()
+			wrapper.vm.identifyMethod = 'email'
+			wrapper.vm.identify = 'john@example.com'
+			wrapper.vm.displayName = 'John'
+			wrapper.vm.deviceGeolocationRequired = true
+
+			await wrapper.vm.saveSigner()
+
+			expect(filesStore.saveOrUpdateSignatureRequest).toHaveBeenCalledWith({
+				signers: [expect.objectContaining({
+					deviceGeolocationRequired: true,
+				})],
+			})
+		})
+
+		it('does not send deviceGeolocationRequired when mode is not optional', async () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'disabled' })
+			wrapper = createWrapper()
+			wrapper.vm.identifyMethod = 'email'
+			wrapper.vm.identify = 'john@example.com'
+			wrapper.vm.displayName = 'John'
+			wrapper.vm.deviceGeolocationRequired = true
+
+			await wrapper.vm.saveSigner()
+
+			const payload = filesStore.saveOrUpdateSignatureRequest.mock.calls[0]?.[0] as {
+				signers: Array<Record<string, unknown>>
+			}
+			expect(payload.signers[0]).not.toHaveProperty('deviceGeolocationRequired')
+		})
+
+		it('restores the toggle from frozen signer metadata when editing', () => {
+			policiesStore.getEffectiveValue.mockReturnValue({ mode: 'optional' })
+			wrapper = createWrapper({
+				signerToEdit: {
+					displayName: 'John',
+					identifyMethods: [{ method: 'email', value: 'john@example.com' }],
+					metadata: { deviceGeolocationRequirement: 'required' },
+				},
+			})
+
+			expect(wrapper.vm.deviceGeolocationRequired).toBe(true)
 		})
 	})
 })

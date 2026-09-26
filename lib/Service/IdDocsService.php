@@ -19,11 +19,13 @@ use OCA\Libresign\Db\SignRequest as SignRequestEntity;
 use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Enum\IdentifyMethodRequirement;
 use OCA\Libresign\Exception\LibresignException;
-use OCA\Libresign\Helper\ValidateHelper;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\IdentityDocumentValidator;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\IAppConfig;
 use OCP\IL10N;
 use OCP\IUser;
+use OCP\IUserManager;
 use Sabre\DAV\UUIDUtil;
 
 class IdDocsService {
@@ -31,7 +33,8 @@ class IdDocsService {
 	public function __construct(
 		private IL10N $l10n,
 		private FileTypeMapper $fileTypeMapper,
-		private ValidateHelper $validateHelper,
+		private FileInputValidator $fileInputValidator,
+		private IdentityDocumentValidator $identityDocumentValidator,
 		private RequestSignatureService $requestSignatureService,
 		private IdDocsMapper $idDocsMapper,
 		private FileMapper $fileMapper,
@@ -39,6 +42,7 @@ class IdDocsService {
 		private IdentifyMethodMapper $identifyMethodMapper,
 		private ITimeFactory $timeFactory,
 		private IAppConfig $appConfig,
+		private IUserManager $userManager,
 	) {
 	}
 
@@ -66,9 +70,9 @@ class IdDocsService {
 		}
 
 		try {
-			$this->validateHelper->validateFileTypeExists($file['type']);
-			$this->validateHelper->validateNewFile($file, ValidateHelper::TYPE_ACCOUNT_DOCUMENT, $user);
-			$this->validateHelper->validateUserHasNoFileWithThisType($user->getUID(), $file['type']);
+			$this->identityDocumentValidator->validateFileTypeExists($file['type']);
+			$this->fileInputValidator->validateNewFile($file, FileInputValidator::TYPE_ACCOUNT_DOCUMENT, $user);
+			$this->identityDocumentValidator->validateUserHasNoFileWithThisType($user->getUID(), $file['type']);
 		} catch (\Exception $e) {
 			throw new LibresignException(json_encode([
 				'type' => 'danger',
@@ -76,6 +80,28 @@ class IdDocsService {
 				'message' => $e->getMessage()
 			]));
 		}
+	}
+
+	/**
+	 * `file` of each entry is the HTTP `LibresignNewFile` payload; its node
+	 * id is normalized once here, the same boundary the signature request has.
+	 */
+	private function normalizeNodeIds(array $files): array {
+		foreach ($files as $fileIndex => $fileData) {
+			if (!is_array($fileData) || !is_array($fileData['file'] ?? null)) {
+				continue;
+			}
+			try {
+				$files[$fileIndex]['file'] = $this->fileInputValidator->normalizeNodeId($fileData['file'], FileInputValidator::TYPE_ACCOUNT_DOCUMENT);
+			} catch (LibresignException $e) {
+				throw new LibresignException(json_encode([
+					'type' => 'danger',
+					'file' => $fileIndex,
+					'message' => $e->getMessage(),
+				]));
+			}
+		}
+		return $files;
 	}
 
 	public function validateIdDocs(array $files, IUser $user): void {
@@ -86,6 +112,7 @@ class IdDocsService {
 	}
 
 	public function addIdDocs(array $files, IUser $user): void {
+		$files = $this->normalizeNodeIds($files);
 		$this->validateIdDocs($files, $user);
 		foreach ($files as $fileData) {
 			$dataToSave = $fileData;
@@ -115,17 +142,38 @@ class IdDocsService {
 		array $files,
 		SignRequest $signRequest,
 	): void {
+		$files = $this->normalizeNodeIds($files);
 		foreach ($files as $fileIndex => $file) {
 			$this->validateTypeOfFile($fileIndex, $file);
 		}
+		// Store the documents under the owner of the file being signed, where
+		// later lookups by the stored user_id expect them; without an IUser the
+		// node would be written to the unauthenticated appdata folder instead.
+		$owner = $this->getOwnerOfSignedFile($signRequest);
 		foreach ($files as $fileData) {
 			$dataToSave = $fileData;
 			$dataToSave['signRequest'] = $signRequest;
 			$dataToSave['name'] = $fileData['name'] ?? $fileData['type'];
+			if ($owner instanceof IUser) {
+				$dataToSave['userManager'] = $owner;
+			}
 			$file = $this->requestSignatureService->saveFile($dataToSave);
 
 			$this->idDocsMapper->save($file->getId(), $signRequest->getId(), null, $fileData['type']);
 		}
+	}
+
+	private function getOwnerOfSignedFile(SignRequest $signRequest): ?IUser {
+		$signedFileId = $signRequest->getFileId();
+		if (!$signedFileId) {
+			return null;
+		}
+		try {
+			$signedFile = $this->fileMapper->getById($signedFileId);
+		} catch (\OCP\AppFramework\Db\DoesNotExistException) {
+			return null;
+		}
+		return $this->userManager->get($signedFile->getUserId());
 	}
 
 	public function list(array $filter, ?int $page = null, ?int $length = null, array $sort = []): array {
@@ -141,10 +189,10 @@ class IdDocsService {
 	}
 
 	public function deleteIdDoc(int $nodeId, IUser $user): void {
-		if ($this->validateHelper->userCanApproveValidationDocuments($user, false)) {
+		if ($this->identityDocumentValidator->userCanApproveValidationDocuments($user, false)) {
 			$idDocs = $this->idDocsMapper->getByNodeId($nodeId);
 		} else {
-			$this->validateHelper->validateIdDocIsOwnedByUser($nodeId, $user->getUID());
+			$this->identityDocumentValidator->validateIdDocIsOwnedByUser($nodeId, $user->getUID());
 			$idDocs = $this->idDocsMapper->getByUserIdAndNodeId($user->getUID(), $nodeId);
 		}
 		$this->idDocsMapper->delete($idDocs);
@@ -153,7 +201,7 @@ class IdDocsService {
 	}
 
 	public function deleteIdDocBySignRequest(int $nodeId, SignRequest $signRequest): void {
-		$this->validateHelper->validateIdDocBelongsToSignRequest($nodeId, $signRequest->getId());
+		$this->identityDocumentValidator->validateIdDocBelongsToSignRequest($nodeId, $signRequest->getId());
 		$idDocs = $this->idDocsMapper->getBySignRequestIdAndNodeId($signRequest->getId(), $nodeId);
 		$this->idDocsMapper->delete($idDocs);
 		$file = $this->fileMapper->getById($idDocs->getFileId());

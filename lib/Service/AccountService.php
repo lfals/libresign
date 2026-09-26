@@ -24,10 +24,11 @@ use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
 use OCA\Libresign\Handler\SignEngine\Pkcs12Handler;
 use OCA\Libresign\Helper\FileUploadHelper;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Service\Crl\CrlService;
 use OCA\Libresign\Service\Policy\PolicyAuthorizationService;
 use OCA\Libresign\Service\Policy\RequestSignAuthorizationService;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\IdentityDocumentValidator;
 use OCA\Settings\Mailer\NewUserMailHelper;
 use OCP\Accounts\IAccountManager;
 use OCP\AppFramework\Db\DoesNotExistException;
@@ -36,7 +37,6 @@ use OCP\Config\IUserConfig;
 use OCP\Files\Config\IMountProviderCollection;
 use OCP\Files\File;
 use OCP\Files\IMimeTypeDetector;
-use OCP\Files\IRootFolder;
 use OCP\Files\NotFoundException;
 use OCP\Http\Client\IClientService;
 use OCP\IAppConfig;
@@ -49,16 +49,11 @@ use Sabre\DAV\UUIDUtil;
 use Throwable;
 
 class AccountService {
-	private ?SignRequest $signRequest = null;
-	private ?\OCA\Libresign\Db\File $fileData = null;
-	private ?\OCP\Files\File $fileToSign = null;
-
 	public function __construct(
 		private IL10N $l10n,
 		private SignRequestMapper $signRequestMapper,
 		private IUserManager $userManager,
 		private IAccountManager $accountManager,
-		private IRootFolder $root,
 		private IMimeTypeDetector $mimeTypeDetector,
 		private FileMapper $fileMapper,
 		private FileTypeMapper $fileTypeMapper,
@@ -71,7 +66,8 @@ class AccountService {
 		private NewUserMailHelper $newUserMail,
 		private IdentifyMethodService $identifyMethodService,
 		private IdentifyMethodMapper $identifyMethodMapper,
-		private ValidateHelper $validateHelper,
+		private IdentityDocumentValidator $identityDocumentValidator,
+		private FileInputValidator $fileInputValidator,
 		private IURLGenerator $urlGenerator,
 		private Pkcs12Handler $pkcs12Handler,
 		private IGroupManager $groupManager,
@@ -127,19 +123,11 @@ class AccountService {
 
 	public function getFileByUuid(string $uuid): array {
 		$signRequest = $this->getSignRequestByUuid($uuid);
-		if (!$this->fileData instanceof \OCA\Libresign\Db\File) {
-			$this->fileData = $this->fileMapper->getById($signRequest->getFileId());
-
-			$nodeId = $this->fileData->getNodeId();
-
-			$fileToSign = $this->root->getUserFolder($this->fileData->getUserId())->getFirstNodeById($nodeId);
-			if ($fileToSign) {
-				$this->fileToSign = $fileToSign;
-			}
-		}
+		$fileData = $this->fileMapper->getById($signRequest->getFileId());
+		$fileToSign = $this->folderService->getReadableNodeById($fileData->getUserId(), $fileData->getNodeId());
 		return [
-			'fileData' => $this->fileData,
-			'fileToSign' => $this->fileToSign
+			'fileData' => $fileData,
+			'fileToSign' => $fileToSign instanceof File ? $fileToSign : null,
 		];
 	}
 
@@ -162,10 +150,7 @@ class AccountService {
 	 * Get signRequest by Uuid
 	 */
 	public function getSignRequestByUuid(string $uuid): SignRequest {
-		if (!$this->signRequest instanceof SignRequest) {
-			$this->signRequest = $this->signRequestMapper->getByUuid($uuid);
-		}
-		return $this->signRequest;
+		return $this->signRequestMapper->getByUuid($uuid);
 	}
 
 	public function createToSign(string $uuid, string $email, string $password, ?string $signPassword): void {
@@ -215,7 +200,7 @@ class AccountService {
 		$info['identificationDocumentsFlow'] = $this->idDocsPolicyService->isIdentificationDocumentsEnabled($user);
 		$info['hasSignatureFile'] = $this->hasSignatureFile($user);
 		$info['phoneNumber'] = $this->getPhoneNumber($user);
-		$info['isApprover'] = $this->validateHelper->userCanApproveValidationDocuments($user, false);
+		$info['isApprover'] = $this->identityDocumentValidator->userCanApproveValidationDocuments($user, false);
 		$info['id_docs_filters'] = $this->getUserConfigIdDocsFilters($user);
 		$info['id_docs_sort'] = $this->getUserConfigIdDocsSort($user);
 		$info['crl_filters'] = $this->getUserConfigCrlFilters($user);
@@ -227,6 +212,7 @@ class AccountService {
 		$info['policy_workbench_catalog_compact_view'] = $this->getUserConfigByKey('policy_workbench_catalog_compact_view', $user) === '1';
 		$info['policy_workbench_catalog_collapsed'] = $this->getUserConfigByKey('policy_workbench_catalog_collapsed', $user) === '1';
 		$info['policy_workbench_category_collapsed_state'] = $this->getUserConfigJsonByKey('policy_workbench_category_collapsed_state', $user);
+		$info['warn_without_visible_signature_fields'] = $this->getUserConfigByKey('warn_without_visible_signature_fields', $user) !== '0';
 		$info['can_manage_group_policies'] = $this->policyAuthorizationService->canUserManageGroupPolicies($user);
 		$info['manageable_policy_group_ids'] = $this->policyAuthorizationService->getManageablePolicyGroupIds($user);
 
@@ -350,7 +336,7 @@ class AccountService {
 	}
 
 	private function getUserConfigIdDocsSort(?IUser $user): array {
-		if (!$user || !$this->validateHelper->userCanApproveValidationDocuments($user, false)) {
+		if (!$user || !$this->identityDocumentValidator->userCanApproveValidationDocuments($user, false)) {
 			return ['sortBy' => null, 'sortOrder' => null];
 		}
 
@@ -518,10 +504,10 @@ class AccountService {
 				// TRANSLATORS Error when uploading a visible signature element file that is empty.
 				throw new \Exception($this->l10n->t('Empty file'));
 			}
-			$this->validateHelper->validateBase64($content, ValidateHelper::TYPE_VISIBLE_ELEMENT_USER);
+			$this->fileInputValidator->validateBase64($content, FileInputValidator::TYPE_VISIBLE_ELEMENT_USER);
 			return $content;
 		}
-		$this->validateHelper->validateBase64($data['file']['base64'], ValidateHelper::TYPE_VISIBLE_ELEMENT_USER);
+		$this->fileInputValidator->validateBase64($data['file']['base64'], FileInputValidator::TYPE_VISIBLE_ELEMENT_USER);
 		$withMime = explode(',', (string)$data['file']['base64']);
 		if (count($withMime) === 2) {
 			$content = base64_decode($withMime[1]);

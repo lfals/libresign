@@ -15,11 +15,11 @@ use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Enum\SignatureFlow;
 use OCA\Libresign\Service\File\FileListService;
 use OCA\Libresign\Service\FileElementService;
+use OCA\Libresign\Service\FolderService;
 use OCA\Libresign\Service\IdentifyMethodService;
+use OCA\Libresign\Service\SignatureRejection\SignatureRejectionVisibilityService;
 use OCA\Libresign\Tests\Unit\TestCase;
 use OCP\Files\File as NodeFile;
-use OCP\Files\Folder;
-use OCP\Files\IRootFolder;
 use OCP\IAppConfig;
 use OCP\IL10N;
 use OCP\IURLGenerator;
@@ -37,8 +37,8 @@ final class FileListServiceTest extends TestCase {
 	private IAppConfig&MockObject $appConfig;
 	private IL10N&MockObject $l10n;
 	private IUserManager&MockObject $userManager;
-	private IRootFolder&MockObject $rootFolder;
-	private Folder&MockObject $userFolder;
+	private FolderService&MockObject $folderService;
+	private SignatureRejectionVisibilityService&MockObject $signatureRejectionVisibilityService;
 	private IUser&MockObject $user;
 
 	public function setUp(): void {
@@ -52,11 +52,10 @@ final class FileListServiceTest extends TestCase {
 		$this->appConfig = $this->createMock(IAppConfig::class);
 		$this->l10n = $this->createMock(IL10N::class);
 		$this->userManager = $this->createMock(IUserManager::class);
-		$this->rootFolder = $this->createMock(IRootFolder::class);
-		$this->userFolder = $this->createMock(Folder::class);
+		$this->folderService = $this->createMock(FolderService::class);
+		$this->signatureRejectionVisibilityService = $this->createMock(SignatureRejectionVisibilityService::class);
 
 		$this->user = $this->createMock(IUser::class);
-		$this->rootFolder->method('getUserFolder')->willReturn($this->userFolder);
 	}
 
 	private function getService(): FileListService {
@@ -69,7 +68,8 @@ final class FileListServiceTest extends TestCase {
 			$this->appConfig,
 			$this->l10n,
 			$this->userManager,
-			$this->rootFolder,
+			$this->folderService,
+			$this->signatureRejectionVisibilityService,
 		);
 	}
 
@@ -634,7 +634,7 @@ final class FileListServiceTest extends TestCase {
 
 		$fileNode = $this->createMock(NodeFile::class);
 		$fileNode->method('getSize')->willReturn(4096);
-		$this->userFolder->method('getFirstNodeById')->with(100)->willReturn($fileNode);
+		$this->folderService->method('getReadableNodeById')->with('creator123', 100)->willReturn($fileNode);
 
 		$service = $this->getService();
 		$result = $service->formatSingleFile($this->user, $file);
@@ -669,11 +669,13 @@ final class FileListServiceTest extends TestCase {
 		$signer->setMetadata([
 			'remote-address' => '127.0.0.1',
 			'user-agent' => 'Mozilla/5.0',
-			'geolocationRequirement' => 'required',
+			'deviceGeolocationRequirement' => 'required',
 			'geolocation' => [
-				'status' => 'collected',
-				'latitude' => -23.5505,
-				'longitude' => -46.6333,
+				'device' => [
+					'status' => 'collected',
+					'latitude' => -23.5505,
+					'longitude' => -46.6333,
+				],
 			],
 		]);
 
@@ -686,11 +688,13 @@ final class FileListServiceTest extends TestCase {
 		$result = $service->formatSingleFile($this->user, $file);
 
 		$this->assertSame([
-			'geolocationRequirement' => 'required',
+			'deviceGeolocationRequirement' => 'required',
 			'geolocation' => [
-				'status' => 'collected',
-				'latitude' => -23.5505,
-				'longitude' => -46.6333,
+				'device' => [
+					'status' => 'collected',
+					'latitude' => -23.5505,
+					'longitude' => -46.6333,
+				],
 			],
 		], $result['signers'][0]['metadata']);
 	}
@@ -699,11 +703,13 @@ final class FileListServiceTest extends TestCase {
 		$file = self::createFileEntity(1, 'file', 'doc.pdf');
 		$signer = $this->createSigner(100, 1);
 		$signer->setMetadata([
-			'geolocationRequirement' => 'optional',
+			'deviceGeolocationRequirement' => 'optional',
 			'geolocation' => [
-				'status' => 'collected',
-				'latitude' => -23.5505,
-				'longitude' => -46.6333,
+				'device' => [
+					'status' => 'collected',
+					'latitude' => -23.5505,
+					'longitude' => -46.6333,
+				],
 			],
 		]);
 
@@ -717,9 +723,78 @@ final class FileListServiceTest extends TestCase {
 
 		$this->assertSame([
 			'geolocation' => [
-				'status' => 'collected',
-				'latitude' => -23.5505,
-				'longitude' => -46.6333,
+				'device' => [
+					'status' => 'collected',
+					'latitude' => -23.5505,
+					'longitude' => -46.6333,
+				],
+			],
+		], $result['signers'][0]['metadata']);
+	}
+
+	public function testFormatSingleFileHidesSourceIpFromOtherViewers(): void {
+		$file = self::createFileEntity(1, 'file', 'doc.pdf');
+		$signer = $this->createSigner(100, 1);
+		$signer->setMetadata([
+			'geolocation' => [
+				'ip' => [
+					'status' => 'resolved',
+					'sourceIp' => '200.100.50.25',
+					'countryCode' => 'BR',
+					'city' => 'São Paulo',
+				],
+			],
+		]);
+
+		$this->user->method('getUID')->willReturn('other-signer');
+		$this->signRequestMapper->method('getByMultipleFileId')->willReturn([$signer]);
+		$this->signRequestMapper->method('getIdentifyMethodsFromSigners')->willReturn([]);
+		$this->signRequestMapper->method('getVisibleElementsFromSigners')->willReturn([]);
+		$this->signRequestMapper->method('getTextOfSignerStatus')->willReturn('signed');
+
+		$service = $this->getService();
+		$result = $service->formatSingleFile($this->user, $file);
+
+		$this->assertSame([
+			'geolocation' => [
+				'ip' => [
+					'status' => 'resolved',
+					'countryCode' => 'BR',
+					'city' => 'São Paulo',
+				],
+			],
+		], $result['signers'][0]['metadata']);
+	}
+
+	public function testFormatSingleFileExposesSourceIpToRequester(): void {
+		$file = self::createFileEntity(1, 'file', 'doc.pdf');
+		$signer = $this->createSigner(100, 1);
+		$signer->setMetadata([
+			'geolocation' => [
+				'ip' => [
+					'status' => 'resolved',
+					'sourceIp' => '200.100.50.25',
+					'countryCode' => 'BR',
+				],
+			],
+		]);
+
+		$this->user->method('getUID')->willReturn('creator123');
+		$this->signRequestMapper->method('getByMultipleFileId')->willReturn([$signer]);
+		$this->signRequestMapper->method('getIdentifyMethodsFromSigners')->willReturn([]);
+		$this->signRequestMapper->method('getVisibleElementsFromSigners')->willReturn([]);
+		$this->signRequestMapper->method('getTextOfSignerStatus')->willReturn('signed');
+
+		$service = $this->getService();
+		$result = $service->formatSingleFile($this->user, $file);
+
+		$this->assertSame([
+			'geolocation' => [
+				'ip' => [
+					'status' => 'resolved',
+					'sourceIp' => '200.100.50.25',
+					'countryCode' => 'BR',
+				],
 			],
 		], $result['signers'][0]['metadata']);
 	}
@@ -738,9 +813,9 @@ final class FileListServiceTest extends TestCase {
 		$fileNodeA->method('getSize')->willReturn(1024);
 		$fileNodeB = $this->createMock(NodeFile::class);
 		$fileNodeB->method('getSize')->willReturn(2048);
-		$this->userFolder->method('getFirstNodeById')->willReturnMap([
-			[200, $fileNodeA],
-			[300, $fileNodeB],
+		$this->folderService->method('getReadableNodeById')->willReturnMap([
+			['creator123', 200, $fileNodeA],
+			['creator123', 300, $fileNodeB],
 		]);
 
 		$mockUser = $this->createMock(IUser::class);
@@ -753,6 +828,75 @@ final class FileListServiceTest extends TestCase {
 		$this->assertSame(3072, $result['size']);
 		$this->assertSame(1024, $result['files'][0]['size']);
 		$this->assertSame(2048, $result['files'][1]['size']);
+	}
+
+	public function testObserverCurrentUserCannotSignInSummary(): void {
+		$file = self::createFileEntity(1, 'file', 'doc.pdf');
+
+		$observer = $this->createSigner(100, 1);
+		$observer->setParticipantRole('observer');
+		$observer->setStatus(4);
+
+		$signer = $this->createSigner(200, 1);
+		$signer->setParticipantRole('signer');
+		$signer->setStatus(1);
+
+		$observerMethod = $this->createIdentifyMethod(
+			IdentifyMethodService::IDENTIFY_ACCOUNT,
+			'observer-user'
+		);
+		$signerMethod = $this->createIdentifyMethod(
+			IdentifyMethodService::IDENTIFY_ACCOUNT,
+			'signer-user'
+		);
+
+		$this->user->method('getUID')->willReturn('observer-user');
+		$this->fileMapper->method('getTextOfStatus')->willReturn('able to sign');
+
+		$service = $this->getService();
+		$method = new \ReflectionMethod(FileListService::class, 'formatSingleFileSummary');
+		$result = $method->invoke(
+			$service,
+			$file,
+			[$observer, $signer],
+			[
+				100 => [$observerMethod],
+				200 => [$signerMethod],
+			],
+			$this->user,
+		);
+
+		$this->assertFalse($result['canSign']);
+	}
+
+	public function testSignerCurrentUserCanSignInSummary(): void {
+		$file = self::createFileEntity(1, 'file', 'doc.pdf');
+
+		$signer = $this->createSigner(200, 1);
+		$signer->setParticipantRole('signer');
+		$signer->setStatus(1);
+
+		$signerMethod = $this->createIdentifyMethod(
+			IdentifyMethodService::IDENTIFY_ACCOUNT,
+			'signer-user'
+		);
+
+		$this->user->method('getUID')->willReturn('signer-user');
+		$this->fileMapper->method('getTextOfStatus')->willReturn('able to sign');
+
+		$service = $this->getService();
+		$method = new \ReflectionMethod(FileListService::class, 'formatSingleFileSummary');
+		$result = $method->invoke(
+			$service,
+			$file,
+			[$signer],
+			[
+				200 => [$signerMethod],
+			],
+			$this->user,
+		);
+
+		$this->assertTrue($result['canSign']);
 	}
 
 	private static function createFileEntity(

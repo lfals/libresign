@@ -15,11 +15,11 @@ use OCA\Libresign\Db\IdentifyMethodMapper;
 use OCA\Libresign\Db\SignRequest as SignRequestEntity;
 use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Enum\FileStatus;
+use OCA\Libresign\Enum\ParticipantRole;
 use OCA\Libresign\Events\SignRequestCanceledEvent;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Helper\FileUploadHelper;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Service\DocMdp\ConfigService as DocMdpConfigService;
 use OCA\Libresign\Service\Envelope\EnvelopeFileRelocator;
 use OCA\Libresign\Service\Envelope\EnvelopeService;
@@ -28,6 +28,9 @@ use OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod;
 use OCA\Libresign\Service\Policy\FilePolicyApplier;
 use OCA\Libresign\Service\SignerGeolocation\SignerGeolocationPolicyService;
 use OCA\Libresign\Service\SignRequest\SignRequestService;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\SignerValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\IMimeTypeDetector;
 use OCP\Files\Node;
@@ -54,7 +57,9 @@ class RequestSignatureService {
 		protected FileElementMapper $fileElementMapper,
 		protected FolderService $folderService,
 		protected IMimeTypeDetector $mimeTypeDetector,
-		protected ValidateHelper $validateHelper,
+		protected FileInputValidator $fileInputValidator,
+		protected SigningRequestValidator $signingRequestValidator,
+		protected SignerValidator $signerValidator,
 		protected IClientService $client,
 		protected DocMdpHandler $docMdpHandler,
 		protected LoggerInterface $logger,
@@ -179,7 +184,7 @@ class RequestSignatureService {
 
 		try {
 			$envelopePath = $data['settings']['path'] ?? null;
-			$envelope = $this->envelopeService->createEnvelope($envelopeName, $userId, $filesCount, $envelopePath);
+			$envelope = $this->envelopeService->createEnvelope($envelopeName, $userId, $filesCount, $envelopePath, $data);
 
 			$envelopeFolder = $this->envelopeService->getEnvelopeFolder($envelope);
 			$envelopeSettings = array_merge($data['settings'] ?? [], [
@@ -357,15 +362,15 @@ class RequestSignatureService {
 			}
 			return $this->fileStatusService->updateFileStatusIfUpgrade($file, $data['status'] ?? 0);
 		}
-		$fileId = null;
+		$nodeId = null;
 		if (isset($data['file']['fileNode']) && $data['file']['fileNode'] instanceof Node) {
-			$fileId = $data['file']['fileNode']->getId();
+			$nodeId = $data['file']['fileNode']->getId();
 		} elseif (!empty($data['file']['nodeId'])) {
-			$fileId = $data['file']['nodeId'];
+			$nodeId = $data['file']['nodeId'];
 		}
-		if (!is_null($fileId)) {
+		if (!is_null($nodeId)) {
 			try {
-				$file = $this->fileMapper->getByNodeId($fileId);
+				$file = $this->fileMapper->getByNodeId($nodeId);
 				$this->filePolicyApplier->syncAllPolicies($file, $data);
 				return $this->fileStatusService->updateFileStatusIfUpgrade($file, $data['status'] ?? 0);
 			} catch (\Throwable) {
@@ -441,7 +446,7 @@ class RequestSignatureService {
 	}
 
 	private function deleteIdentifyMethodIfNotExits(array $signers, FileEntity $file): void {
-		$normalizedSigners = $this->validateHelper->normalizeRequestSigners($signers);
+		$normalizedSigners = $this->signerValidator->normalizeRequestSigners($signers);
 		$signRequests = $this->signRequestMapper->getByFileId($file->getId());
 		foreach ($signRequests as $key => $signRequest) {
 			$identifyMethods = $this->identifyMethod->getIdentifyMethodsFromSignRequestId($signRequest->getId());
@@ -482,26 +487,33 @@ class RequestSignatureService {
 	private function associateToSigners(array $data, FileEntity $file): array {
 		$return = [];
 		if (!empty($data['signers'])) {
-			$normalizedSigners = $this->validateHelper->normalizeRequestSigners($data['signers']);
+			$normalizedSigners = $this->signerValidator->normalizeRequestSigners($data['signers']);
 			$this->deleteIdentifyMethodIfNotExits($normalizedSigners, $file);
 			$this->identifyMethod->clearCache();
 
 			$this->sequentialSigningService->resetOrderCounter();
 			$fileStatus = $data['status'] ?? null;
-			$requester = ($data['userManager'] ?? null) instanceof IUser ? $data['userManager'] : null;
 
 			foreach ($normalizedSigners as $signer) {
+				$participantRole = ParticipantRole::fromNullable($signer['participantRole'] ?? null);
 				$userProvidedOrder = isset($signer['signingOrder']) ? (int)$signer['signingOrder'] : null;
-				$signingOrder = $this->sequentialSigningService->determineSigningOrder($userProvidedOrder);
+				$signingOrder = $participantRole->canSign()
+					? $this->sequentialSigningService->determineSigningOrder($userProvidedOrder)
+					: 0;
 				$signerStatus = $signer['status'] ?? null;
 				$shouldNotify = !isset($signer['notify']) || $signer['notify'] !== 0;
 				$lastSignRequest = null;
 
-				$requesterRequiresGeolocation = filter_var(
-					$signer['geolocationRequired'] ?? false,
-					FILTER_VALIDATE_BOOLEAN,
-					FILTER_NULL_ON_FAILURE,
-				) ?? false;
+				// Absent key means "leave frozen requirement unchanged" on updates.
+				// Only default to false when creating a sign request that has no freeze yet.
+				$requesterRequiresGeolocation = null;
+				if (array_key_exists('deviceGeolocationRequired', $signer)) {
+					$requesterRequiresGeolocation = filter_var(
+						$signer['deviceGeolocationRequired'],
+						FILTER_VALIDATE_BOOLEAN,
+						FILTER_NULL_ON_FAILURE,
+					) ?? false;
+				}
 
 				foreach ($signer['identifyMethods'] as $identifyMethod) {
 					$lastSignRequest = $this->signRequestService->createOrUpdateSignRequest(
@@ -515,12 +527,19 @@ class RequestSignatureService {
 						signingOrder: $signingOrder,
 						fileStatus: $fileStatus,
 						signerStatus: $signerStatus,
-						afterPersist: function (SignRequestEntity $signRequest) use ($file, $requesterRequiresGeolocation, $requester): void {
+						participantRole: $participantRole,
+						afterPersist: function (SignRequestEntity $signRequest) use ($file, $requesterRequiresGeolocation): void {
+							$requiresGeolocation = $requesterRequiresGeolocation;
+							if ($requiresGeolocation === null) {
+								if ($this->signerGeolocationPolicyService->getFrozenRequirement($signRequest) !== null) {
+									return;
+								}
+								$requiresGeolocation = false;
+							}
 							$this->signerGeolocationPolicyService->persistEffectiveRequirement(
 								$signRequest,
 								$file,
-								$requesterRequiresGeolocation,
-								$requester,
+								$requiresGeolocation,
 							);
 						},
 					);
@@ -559,7 +578,7 @@ class RequestSignatureService {
 	public function validateNewRequestToFile(array $data): void {
 		$this->validateNewFile($data);
 		$this->validateSigners($data);
-		$this->validateHelper->validateFileStatus($data);
+		$this->signingRequestValidator->validateFileStatus($data);
 	}
 
 	public function validateNewFile(array $data): void {
@@ -567,7 +586,7 @@ class RequestSignatureService {
 			// TRANSLATORS Error shown when creating a signature request without a document file name.
 			throw new \Exception($this->l10n->t('File name is required'));
 		}
-		$this->validateHelper->validateNewFile($data);
+		$this->fileInputValidator->validateNewFile($data);
 	}
 
 	public function validateSigners(array $data): void {
@@ -584,8 +603,8 @@ class RequestSignatureService {
 			throw new \Exception($this->l10n->t('Signers list needs to be an array'));
 		}
 
-		$this->validateHelper->validateIdentifySigners($data);
-		$normalizedSigners = $this->validateHelper->normalizeRequestSigners($data['signers']);
+		$this->signerValidator->validateIdentifySigners($data);
+		$normalizedSigners = $this->signerValidator->normalizeRequestSigners($data['signers']);
 
 		foreach ($normalizedSigners as $signer) {
 			$this->identifyMethod->setAllEntityData($signer);

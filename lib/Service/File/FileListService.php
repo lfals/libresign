@@ -20,14 +20,17 @@ use OCA\Libresign\Enum\IdentifyMethodRequirement;
 use OCA\Libresign\Enum\SignatureFlow;
 use OCA\Libresign\Enum\SignerGeolocationCollectionStatus;
 use OCA\Libresign\Enum\SignerGeolocationMode;
+use OCA\Libresign\Enum\SignerIpGeolocationStatus;
+use OCA\Libresign\Enum\SignerIpGeolocationUnavailableReason;
 use OCA\Libresign\ResponseDefinitions;
 use OCA\Libresign\Service\FileElementService;
+use OCA\Libresign\Service\FolderService;
 use OCA\Libresign\Service\IdentifyMethodService;
+use OCA\Libresign\Service\SignatureRejection\SignatureRejectionVisibilityService;
 use OCA\Libresign\Service\SignerGeolocation\SignerGeolocationMetadataValidator;
 use OCA\Libresign\Service\SignerGeolocation\SignerGeolocationPolicyService;
 use OCP\AppFramework\Db\Entity;
 use OCP\Files\File as NodeFile;
-use OCP\Files\IRootFolder;
 use OCP\IAppConfig;
 use OCP\IL10N;
 use OCP\IURLGenerator;
@@ -44,6 +47,8 @@ use OCP\IUserManager;
  * @psalm-import-type LibresignSignerDetail from ResponseDefinitions
  * @psalm-import-type LibresignSignerSummary from ResponseDefinitions
  * @psalm-import-type LibresignGeolocationRequirement from ResponseDefinitions
+ * @psalm-import-type LibresignSignerDeviceGeolocation from ResponseDefinitions
+ * @psalm-import-type LibresignSignerIpGeolocation from ResponseDefinitions
  * @psalm-import-type LibresignSignerGeolocation from ResponseDefinitions
  */
 class FileListService {
@@ -56,7 +61,8 @@ class FileListService {
 		private IAppConfig $appConfig,
 		private IL10N $l10n,
 		private IUserManager $userManager,
-		private IRootFolder $root,
+		private FolderService $folderService,
+		private SignatureRejectionVisibilityService $signatureRejectionVisibilityService,
 	) {
 	}
 
@@ -283,6 +289,7 @@ class FileListService {
 				$file['metadata'],
 				$user,
 				$meSignRequestId,
+				$fileEntity,
 			);
 			$file['signers'][] = $signerData;
 			if (!empty($signerData['me']) && isset($signerData['sign_request_uuid']) && !isset($file['url'])) {
@@ -336,17 +343,24 @@ class FileListService {
 		$mySigners = array_values(array_filter($signers, fn (SignRequest $signer)
 			=> $this->isCurrentUserSigner($identifyMethods[$signer->getId()] ?? [], $user),
 		));
-		$pendingSigners = array_values(array_filter($signers, fn (SignRequest $signer) => $signer->getSigned() === null));
+		$mySigningParticipants = array_values(array_filter(
+			$mySigners,
+			fn (SignRequest $signer) => $signer->getParticipantRoleEnum()->canSign(),
+		));
+		$pendingSigners = array_values(array_filter(
+			$signers,
+			fn (SignRequest $signer) => $signer->getSigned() === null && $signer->getParticipantRoleEnum()->canSign(),
+		));
 		$isOrderedNumeric = SignatureFlow::fromNumeric($fileEntity->getSignatureFlow())->value === SignatureFlow::ORDERED_NUMERIC->value;
 		$minOrder = empty($pendingSigners)
 			? null
 			: min(array_map(fn (SignRequest $signer) => $signer->getSigningOrder() ?: 1, $pendingSigners));
 
 		$canSign = $fileEntity->getStatus() > 0
-			&& !empty($mySigners)
+			&& !empty($mySigningParticipants)
 			&& !empty($pendingSigners)
-			&& !array_filter($mySigners, fn (SignRequest $signer) => $signer->getSigned() !== null)
-			&& (!$isOrderedNumeric || array_filter($mySigners, fn (SignRequest $signer) => ($signer->getSigningOrder() ?: 1) === $minOrder));
+			&& !array_filter($mySigningParticipants, fn (SignRequest $signer) => $signer->getSigned() !== null)
+			&& (!$isOrderedNumeric || array_filter($mySigningParticipants, fn (SignRequest $signer) => ($signer->getSigningOrder() ?: 1) === $minOrder));
 
 		/** @var LibresignFileSummary */
 		return [
@@ -389,6 +403,7 @@ class FileListService {
 		array $metadata,
 		?IUser $user,
 		?int $meSignRequestId = null,
+		?File $fileEntity = null,
 	): array {
 		$identifyMethodsOfSigner = $identifyMethods[$signer->getId()] ?? [];
 		$resolvedDisplayName = $this->resolveSignerDisplayName($signer, $identifyMethodsOfSigner);
@@ -425,6 +440,7 @@ class FileListService {
 			'signingOrder' => $signer->getSigningOrder(),
 			'status' => $signer->getStatus(),
 			'statusText' => $this->signRequestMapper->getTextOfSignerStatus($signer->getStatus()),
+			'participantRole' => $signer->getParticipantRoleEnum()->value,
 			'me' => $me,
 			'visibleElements' => isset($visibleElements[$signer->getId()])
 				? $this->fileElementService->formatVisibleElements(
@@ -470,9 +486,25 @@ class FileListService {
 			$data['signed'] = $signer->getSigned()->format(DateTimeInterface::ATOM);
 		}
 
-		$geolocationMetadata = $this->extractGeolocationMetadataFromSignRequest($signer);
+		$requesterUserId = $fileEntity?->getUserId() ?? '';
+		$canViewSensitiveSignerMetadata = $data['me']
+			|| ($requesterUserId !== '' && $user?->getUID() === $requesterUserId);
+
+		$geolocationMetadata = $this->extractGeolocationMetadataFromSignRequest(
+			$signer,
+			$canViewSensitiveSignerMetadata,
+		);
 		if ($geolocationMetadata !== []) {
 			$data['metadata'] = $geolocationMetadata;
+		}
+
+		$rejection = $this->signatureRejectionVisibilityService->buildSignerRejection(
+			$signer,
+			$fileEntity,
+			$canViewSensitiveSignerMetadata,
+		);
+		if ($rejection !== null) {
+			$data['rejection'] = $rejection;
 		}
 
 		ksort($data);
@@ -481,11 +513,14 @@ class FileListService {
 
 	/**
 	 * @psalm-return array{
-	 *     geolocationRequirement?: LibresignGeolocationRequirement,
+	 *     deviceGeolocationRequirement?: LibresignGeolocationRequirement,
 	 *     geolocation?: LibresignSignerGeolocation,
 	 * }
 	 */
-	private function extractGeolocationMetadataFromSignRequest(SignRequest $signer): array {
+	private function extractGeolocationMetadataFromSignRequest(
+		SignRequest $signer,
+		bool $includeSourceIp = false,
+	): array {
 		$signerMetadata = $signer->getMetadata();
 		if (!is_array($signerMetadata) || $signerMetadata === []) {
 			return [];
@@ -500,27 +535,74 @@ class FileListService {
 		}
 
 		$storedGeolocation = $signerMetadata[SignerGeolocationMetadataValidator::METADATA_GEOLOCATION_KEY] ?? null;
-		if (is_array($storedGeolocation)) {
-			$status = SignerGeolocationCollectionStatus::tryFrom((string)($storedGeolocation['status'] ?? ''));
+		if (!is_array($storedGeolocation)) {
+			return $geolocationMetadata;
+		}
+
+		$geolocation = [];
+
+		$storedDevice = $storedGeolocation[SignerGeolocationMetadataValidator::METADATA_DEVICE_KEY] ?? null;
+		if (is_array($storedDevice)) {
+			$status = SignerGeolocationCollectionStatus::tryFrom((string)($storedDevice['status'] ?? ''));
 			if ($status !== null) {
-				/** @var LibresignSignerGeolocation $geolocation */
-				$geolocation = [
+				/** @var LibresignSignerDeviceGeolocation $device */
+				$device = [
 					'status' => $status->value,
 				];
-				if (array_key_exists('latitude', $storedGeolocation) && is_numeric($storedGeolocation['latitude'])) {
-					$geolocation['latitude'] = (float)$storedGeolocation['latitude'];
+				if (array_key_exists('latitude', $storedDevice) && is_numeric($storedDevice['latitude'])) {
+					$device['latitude'] = (float)$storedDevice['latitude'];
 				}
-				if (array_key_exists('longitude', $storedGeolocation) && is_numeric($storedGeolocation['longitude'])) {
-					$geolocation['longitude'] = (float)$storedGeolocation['longitude'];
+				if (array_key_exists('longitude', $storedDevice) && is_numeric($storedDevice['longitude'])) {
+					$device['longitude'] = (float)$storedDevice['longitude'];
 				}
-				if (array_key_exists('accuracy', $storedGeolocation) && is_numeric($storedGeolocation['accuracy'])) {
-					$geolocation['accuracy'] = (float)$storedGeolocation['accuracy'];
+				if (array_key_exists('accuracy', $storedDevice) && is_numeric($storedDevice['accuracy'])) {
+					$device['accuracy'] = (float)$storedDevice['accuracy'];
 				}
-				if (array_key_exists('timestamp', $storedGeolocation) && is_numeric($storedGeolocation['timestamp'])) {
-					$geolocation['timestamp'] = (int)$storedGeolocation['timestamp'];
+				if (array_key_exists('timestamp', $storedDevice) && is_numeric($storedDevice['timestamp'])) {
+					$device['timestamp'] = (int)$storedDevice['timestamp'];
 				}
-				$geolocationMetadata[SignerGeolocationMetadataValidator::METADATA_GEOLOCATION_KEY] = $geolocation;
+				$geolocation[SignerGeolocationMetadataValidator::METADATA_DEVICE_KEY] = $device;
 			}
+		}
+
+		$storedIp = $storedGeolocation[SignerGeolocationMetadataValidator::METADATA_IP_KEY] ?? null;
+		if (is_array($storedIp)) {
+			$status = SignerIpGeolocationStatus::tryFrom((string)($storedIp['status'] ?? ''));
+			if ($status !== null) {
+				/** @var LibresignSignerIpGeolocation $ip */
+				$ip = [
+					'status' => $status->value,
+				];
+				$stringKeys = ['countryCode', 'country', 'regionCode', 'region', 'city'];
+				if ($includeSourceIp) {
+					array_unshift($stringKeys, 'sourceIp');
+				}
+				foreach ($stringKeys as $stringKey) {
+					if (array_key_exists($stringKey, $storedIp) && is_string($storedIp[$stringKey]) && $storedIp[$stringKey] !== '') {
+						$ip[$stringKey] = $storedIp[$stringKey];
+					}
+				}
+				if (array_key_exists('reason', $storedIp) && is_string($storedIp['reason'])) {
+					$reason = SignerIpGeolocationUnavailableReason::tryFrom($storedIp['reason']);
+					if ($reason !== null) {
+						$ip['reason'] = $reason->value;
+					}
+				}
+				if (array_key_exists('latitude', $storedIp) && is_numeric($storedIp['latitude'])) {
+					$ip['latitude'] = (float)$storedIp['latitude'];
+				}
+				if (array_key_exists('longitude', $storedIp) && is_numeric($storedIp['longitude'])) {
+					$ip['longitude'] = (float)$storedIp['longitude'];
+				}
+				if (array_key_exists('accuracyRadius', $storedIp) && is_numeric($storedIp['accuracyRadius'])) {
+					$ip['accuracyRadius'] = (int)$storedIp['accuracyRadius'];
+				}
+				$geolocation[SignerGeolocationMetadataValidator::METADATA_IP_KEY] = $ip;
+			}
+		}
+
+		if ($geolocation !== []) {
+			$geolocationMetadata[SignerGeolocationMetadataValidator::METADATA_GEOLOCATION_KEY] = $geolocation;
 		}
 
 		return $geolocationMetadata;
@@ -538,6 +620,7 @@ class FileListService {
 		SignRequest $signer,
 		array $identifyMethods,
 		array $visibleElements,
+		?File $fileEntity = null,
 	): array {
 		$identifyMethodsOfSigner = $identifyMethods[$signer->getId()] ?? [];
 		$resolvedDisplayName = $this->resolveSignerDisplayName($signer, $identifyMethodsOfSigner);
@@ -560,6 +643,7 @@ class FileListService {
 			'signingOrder' => $signer->getSigningOrder(),
 			'status' => $signer->getStatus(),
 			'statusText' => $this->signRequestMapper->getTextOfSignerStatus($signer->getStatus()),
+			'participantRole' => $signer->getParticipantRoleEnum()->value,
 			'me' => false,
 			'visibleElements' => isset($visibleElements[$signer->getId()])
 				? $this->fileElementService->formatVisibleElements(
@@ -577,6 +661,16 @@ class FileListService {
 		if ($signer->getSigned()) {
 			$data['signed'] = $signer->getSigned()->format(DateTimeInterface::ATOM);
 		}
+
+		$rejection = $this->signatureRejectionVisibilityService->buildSignerRejection(
+			$signer,
+			$fileEntity,
+			false,
+		);
+		if ($rejection !== null) {
+			$data['rejection'] = $rejection;
+		}
+
 		ksort($data);
 		return $data;
 	}
@@ -673,14 +767,14 @@ class FileListService {
 		$currentSignerRequestUuid = null;
 		foreach ($signRequestEntities as $signer) {
 			if ($user) {
-				$signerData = $this->formatSignerData($signer, $identifyMethods, $visibleElementsData, $metadata, $user);
+				$signerData = $this->formatSignerData($signer, $identifyMethods, $visibleElementsData, $metadata, $user, null, $mainEntity);
 				$signers[] = $signerData;
 
 				if ($currentSignerRequestUuid === null && !empty($signerData['me']) && isset($signerData['sign_request_uuid'])) {
 					$currentSignerRequestUuid = $signerData['sign_request_uuid'];
 				}
 			} else {
-				$signers[] = $this->formatSignerDataBasic($signer, $identifyMethods, $visibleElementsData);
+				$signers[] = $this->formatSignerDataBasic($signer, $identifyMethods, $visibleElementsData, $mainEntity);
 			}
 		}
 
@@ -973,7 +1067,7 @@ class FileListService {
 			return 0;
 		}
 		try {
-			$fileNode = $this->root->getUserFolder($file->getUserId())->getFirstNodeById($nodeId);
+			$fileNode = $this->folderService->getReadableNodeById($file->getUserId(), $nodeId);
 			if ($fileNode instanceof NodeFile && method_exists($fileNode, 'getSize')) {
 				return max(0, (int)$fileNode->getSize());
 			}

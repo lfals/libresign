@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 namespace OCA\Libresign\SetupCheck;
 
+use OCA\Libresign\Service\Install\SetupTrustMode;
 use OCA\Libresign\Service\Install\SignSetupService;
 use OCP\App\IAppManager;
 use OCP\IL10N;
@@ -21,13 +22,50 @@ trait SetupCheckUtils {
 	private LoggerInterface $logger;
 
 	private function verifyResourceIntegrity(string $resource, bool $debugEnabled): array {
-		$this->signSetupService->willUseLocalCert($debugEnabled);
-		$result = $this->signSetupService->verify(php_uname('m'), $resource);
-		if (count($result) === 1 && $debugEnabled) {
-			if (isset($result['SIGNATURE_DATA_NOT_FOUND']) || isset($result['EMPTY_SIGNATURE_DATA'])) {
-				return [];
-			}
+		// Debug mode does not imply that setup metadata was signed with the
+		// local development certificate. Official releases can also run with
+		// debug enabled, so always try the production trust chain first.
+		$result = $this->signSetupService->verify(
+			php_uname('m'),
+			$resource,
+			SetupTrustMode::Production,
+		);
+
+		if (!$debugEnabled || $result === []) {
+			return $result;
 		}
+
+		if (count($result) === 1
+			&& (isset($result['SIGNATURE_DATA_NOT_FOUND']) || isset($result['EMPTY_SIGNATURE_DATA']))
+		) {
+			return [];
+		}
+
+		if (!isset($result['HASH_FILE_ERROR'])) {
+			return $result;
+		}
+
+		// Development checkouts can have metadata signed with the local
+		// certificate. Only use that trust chain as a debug-mode fallback
+		// when verification with the production certificate could not
+		// validate the signed metadata.
+		$localResult = $this->signSetupService->verify(
+			php_uname('m'),
+			$resource,
+			SetupTrustMode::Development,
+		);
+
+		if ($localResult === []) {
+			return [];
+		}
+
+		if (isset($localResult['INVALID_HASH'])
+			|| isset($localResult['FILE_MISSING'])
+			|| isset($localResult['EXTRA_FILE'])
+		) {
+			return $localResult;
+		}
+
 		return $result;
 	}
 
@@ -51,13 +89,23 @@ trait SetupCheckUtils {
 			}
 		}
 		if (isset($result['HASH_FILE_ERROR'])) {
-			if ($debugEnabled) {
+			$this->logger->error('Unable to verify binary integrity', ['result' => $result]);
+			if ($this->appManager->isEnabledForUser('logreader')) {
 				return [
-					// TRANSLATORS This is a security/integrity check failure. LibreSign only accepts approved signing binaries whose hashes match maintainer-signed metadata shipped with the app. Even a one-bit change makes the binary invalid.
-					$l10n->t('Invalid hash of binaries files.'),
-					$l10n->t('Debug mode is enabled at your config.php and your LibreSign app was signed using a production signature. If you are not working at development of LibreSign, disable your debug mode or run the command: occ libresign install --%s --use-local-cert', [$resource]),
+					// TRANSLATORS LibreSign could not complete verification of the maintainer-signed binary integrity metadata. This does not necessarily mean that a downloaded binary has a wrong hash.
+					$l10n->t('Unable to verify binary integrity.'),
+					// TRANSLATORS %s is a link to the Nextcloud logging settings, where the technical cause of the integrity-verification failure can be inspected.
+					$l10n->t('Check your nextcloud.log file on %s for the verification error before reinstalling the binaries.', [
+						$this->urlGenerator->linkToRouteAbsolute('settings.adminsettings.form', ['section' => 'logging'])
+					]),
 				];
 			}
+			return [
+				// TRANSLATORS LibreSign could not complete verification of the maintainer-signed binary integrity metadata. This does not necessarily mean that a downloaded binary has a wrong hash.
+				$l10n->t('Unable to verify binary integrity.'),
+				// TRANSLATORS The technical cause of an integrity-verification failure is written to the Nextcloud server log.
+				$l10n->t('Check your nextcloud.log file for the verification error before reinstalling the binaries.'),
+			];
 		}
 		$this->logger->error('Invalid hash of binaries files', ['result' => $result]);
 		if ($this->appManager->isEnabledForUser('logreader')) {

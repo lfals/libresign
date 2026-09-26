@@ -25,6 +25,7 @@ use OCA\Libresign\Service\Policy\Provider\DocMdp\DocMdpPolicy;
 use OCA\Libresign\Service\Policy\Provider\Envelope\EnvelopePolicy;
 use OCA\Libresign\Service\Policy\Provider\ExpirationRules\ExpirationRulesPolicy;
 use OCA\Libresign\Service\Policy\Provider\Footer\FooterPolicy;
+use OCA\Libresign\Service\Policy\Provider\Helper\SiblingPolicyEffectiveBoolReader;
 use OCA\Libresign\Service\Policy\Provider\IdentificationDocuments\IdentificationDocumentsPolicy;
 use OCA\Libresign\Service\Policy\Provider\IdentifyMethods\IdentifyMethodsPolicy;
 use OCA\Libresign\Service\Policy\Provider\IdentifyMethods\IdentifyMethodsPolicyValue;
@@ -36,6 +37,7 @@ use OCA\Libresign\Service\Policy\Provider\Signature\SignatureFlowPolicy;
 use OCA\Libresign\Service\Policy\Provider\SignatureHashAlgorithm\SignatureHashAlgorithmPolicy;
 use OCA\Libresign\Service\Policy\Provider\SignatureText\SignatureTextPolicy;
 use OCA\Libresign\Service\Policy\Provider\SignerGeolocation\SignerGeolocationPolicy;
+use OCA\Libresign\Service\Policy\Provider\SignerIpGeolocation\SignerIpGeolocationPolicy;
 use OCA\Libresign\Service\Policy\Provider\Tsa\TsaPolicy;
 use OCA\Libresign\Service\Policy\Provider\Tsa\TsaPolicyManagedValue;
 use OCA\Libresign\Service\Policy\Provider\ValidationAccess\ValidationAccessPolicy;
@@ -132,9 +134,11 @@ final class PolicySourceTest extends TestCase {
 		$coreAppConfig = $this->coreAppConfig;
 		$l10n = $this->l10n;
 		$identifyMethodService = $this->identifyMethodService;
+		$siblingPolicyEffectiveBoolReader = $this->createMock(SiblingPolicyEffectiveBoolReader::class);
+		$siblingPolicyEffectiveBoolReader->method('getEffectiveBool')->willReturn(false);
 		$container
 			->method('get')
-			->willReturnCallback(static function (string $class) use ($identifyMethodService, $coreAppConfig, $l10n): object {
+			->willReturnCallback(static function (string $class) use ($identifyMethodService, $coreAppConfig, $l10n, $siblingPolicyEffectiveBoolReader): object {
 				if ($class === IdentifyMethodsPolicy::class) {
 					return new IdentifyMethodsPolicy($identifyMethodService);
 				}
@@ -143,6 +147,9 @@ final class PolicySourceTest extends TestCase {
 				}
 				if ($class === SignatureTextPolicy::class) {
 					return new SignatureTextPolicy($l10n);
+				}
+				if ($class === ValidationAccessPolicy::class) {
+					return new ValidationAccessPolicy($siblingPolicyEffectiveBoolReader);
 				}
 				if (!\class_exists($class)) {
 					throw new \RuntimeException('Unexpected provider class: ' . $class);
@@ -169,6 +176,7 @@ final class PolicySourceTest extends TestCase {
 			SignatureHashAlgorithmPolicy::class,
 			SignatureTextPolicy::class,
 			SignerGeolocationPolicy::class,
+			SignerIpGeolocationPolicy::class,
 			TsaPolicy::class,
 			ValidationAccessPolicy::class,
 			SigningModePolicy::class,

@@ -47,15 +47,44 @@ namespace OCA\Libresign;
  *     },
  *     envelopeFolderId?: int,
  * }
+ * @psalm-type LibresignParticipantRole = 'signer'|'observer'
  * @psalm-type LibresignGeolocationCollectionStatus = 'collected'|'denied'|'unavailable'|'skipped'
  * @psalm-type LibresignSignerGeolocationPolicyMode = 'disabled'|'optional'|'required'
+ * @psalm-type LibresignSignerIpGeolocationPolicyMode = 'disabled'|'enabled'
  * @psalm-type LibresignGeolocationRequirement = 'disabled'|'required'
- * @psalm-type LibresignSignerGeolocation = array{
+ * @psalm-type LibresignSignerIpGeolocationStatus = 'resolved'|'not_found'|'unavailable'
+ * @psalm-type LibresignSignerIpGeolocationUnavailableReason = 'database_not_ready'|'address_unavailable'|'lookup_failed'
+ * @psalm-type LibresignGeoIpDatabaseStatus = 'not_configured'|'not_found'|'not_readable'|'invalid_database'|'unsupported_database'|'ready'
+ * @psalm-type LibresignSignerDeviceGeolocation = array{
  *     status: LibresignGeolocationCollectionStatus,
  *     latitude?: float,
  *     longitude?: float,
  *     accuracy?: float,
  *     timestamp?: int,
+ * }
+ * @psalm-type LibresignSignerIpGeolocation = array{
+ *     status: LibresignSignerIpGeolocationStatus,
+ *     sourceIp?: string,
+ *     countryCode?: string,
+ *     country?: string,
+ *     regionCode?: string,
+ *     region?: string,
+ *     city?: string,
+ *     latitude?: float,
+ *     longitude?: float,
+ *     accuracyRadius?: int,
+ *     reason?: LibresignSignerIpGeolocationUnavailableReason,
+ * }
+ * @psalm-type LibresignSignerGeolocation = array{
+ *     device?: LibresignSignerDeviceGeolocation,
+ *     ip?: LibresignSignerIpGeolocation,
+ * }
+ * @psalm-type LibresignGeoIpConfig = array{
+ *     path: ?string,
+ *     status: LibresignGeoIpDatabaseStatus,
+ *     databaseType?: string,
+ *     buildEpoch?: int,
+ *     modifiedAt?: string,
  * }
  * @psalm-type LibresignNewSigner = array{
  *     identifyMethods: list<array{
@@ -68,13 +97,15 @@ namespace OCA\Libresign;
  *     notify?: non-negative-int,
  *     signingOrder?: non-negative-int,
  *     status?: int,
- *     geolocationRequired?: bool,
+ *     participantRole?: LibresignParticipantRole,
+ *     deviceGeolocationRequired?: bool,
  * }
  * @psalm-type LibresignNewFile = array{
  *     base64?: string,
- *     nodeId?: non-negative-int,
+ *     nodeId?: non-negative-int|numeric-string,
  *     path?: string,
  *     url?: string,
+ *     name?: string,
  * }
  * @psalm-type LibresignIdDocs = array{
  *     file: LibresignNewFile,
@@ -195,7 +226,7 @@ namespace OCA\Libresign;
  * @psalm-type LibresignSignerMetadata = array{
  *     remote-address?: string,
  *     user-agent?: string,
- *     geolocationRequirement?: LibresignGeolocationRequirement,
+ *     deviceGeolocationRequirement?: LibresignGeolocationRequirement,
  *     geolocation?: LibresignSignerGeolocation,
  *     notify?: LibresignNotify[],
  *     certificate_info?: LibresignSignerCertificateInfo,
@@ -206,8 +237,14 @@ namespace OCA\Libresign;
  *     email?: ?string,
  *     identifyMethods?: LibresignIdentifyMethod[],
  *     signed: ?string,
- *     status: 0|1|2,
+ *     status: 0|1|2|3|4,
  *     statusText: string,
+ *     participantRole?: LibresignParticipantRole,
+ * }
+ * @psalm-type LibresignSignerRejection = array{
+ *     rejectedAt: string,
+ *     comment?: string,
+ *     commentPrivate?: bool,
  * }
  * @psalm-type LibresignSignerDetail = LibresignSignerSummary&array{
  *     description: ?string,
@@ -223,12 +260,14 @@ namespace OCA\Libresign;
  *     sign_request_uuid?: string,
  *     hash_algorithm?: string,
  *     covers_entire_document?: bool,
+ *     document_modification_state?: 'unchanged'|'unsigned_content'|'trailing_data'|'invalid_byte_range'|'invalid_eof_boundary',
  *     me: bool,
  *     signingOrder?: non-negative-int,
  *     visibleElements: LibresignVisibleElement[],
  *     signatureMethods?: LibresignSignatureMethods,
  *     uid?: string,
  *     metadata?: LibresignSignerMetadata,
+ *     rejection?: LibresignSignerRejection,
  * }
  *
  * Shared feedback and action contracts
@@ -305,6 +344,14 @@ namespace OCA\Libresign;
  *     action: int,
  *     errors: list<LibresignActionErrorWithCode>,
  *     redirect?: string,
+ * }
+ * @psalm-type LibresignSignatureRejectionResponse = array{
+ *     message: string,
+ *     signRequestId: int,
+ *     status: int,
+ *     statusText: string,
+ *     rejectedAt: string,
+ *     workflowCanceled: bool,
  * }
  *
  * Certificate and admin contracts
@@ -424,6 +471,8 @@ namespace OCA\Libresign;
  *     parentPolicyKey?: string,
  *     compositeChildren?: list<string>,
  *     mailProviderAvailable?: bool,
+ *     validationUrlIsPrivate?: bool,
+ *     observerProfileEnabled?: bool,
  * }
  * @psalm-type LibresignEffectivePolicyState = array{
  *     policyKey: string,
@@ -489,6 +538,15 @@ namespace OCA\Libresign;
  * @psalm-type LibresignUserPolicyResponse = array{
  *     policy: LibresignUserPolicyState,
  * }
+ * @psalm-type LibresignEffectiveCompoundPolicyWriteResponse = LibresignMessageResponse&array{
+ *     policies: array<string, LibresignEffectivePolicyState>,
+ * }
+ * @psalm-type LibresignGroupCompoundPolicyWriteResponse = LibresignMessageResponse&array{
+ *     policies: array<string, LibresignGroupPolicyState>,
+ * }
+ * @psalm-type LibresignUserCompoundPolicyWriteResponse = LibresignMessageResponse&array{
+ *     policies: array<string, LibresignUserPolicyState>,
+ * }
  * @psalm-type LibresignGroupPolicyWriteResponse = LibresignMessageResponse&LibresignGroupPolicyResponse
  * @psalm-type LibresignSystemPolicyWriteResponse = LibresignMessageResponse&LibresignEffectivePolicyResponse
  * @psalm-type LibresignUserPolicyWriteResponse = LibresignMessageResponse&LibresignUserPolicyResponse
@@ -502,6 +560,10 @@ namespace OCA\Libresign;
  * }
  * @psalm-type LibresignPolicySnapshotNumericEntry = array{
  *     effectiveValue: int,
+ *     sourceScope: string,
+ * }
+ * @psalm-type LibresignPolicySnapshotBooleanEntry = array{
+ *     effectiveValue: bool,
  *     sourceScope: string,
  * }
  * @psalm-type LibresignPolicySnapshotIdentificationDocumentsValue = array{
@@ -532,6 +594,28 @@ namespace OCA\Libresign;
  *     effectiveValue: LibresignPolicySnapshotSignerGeolocationValue,
  *     sourceScope: string,
  * }
+ * @psalm-type LibresignPolicySnapshotSignerIpGeolocationValue = array{
+ *     mode: LibresignSignerIpGeolocationPolicyMode,
+ * }
+ * @psalm-type LibresignPolicySnapshotSignerIpGeolocationEntry = array{
+ *     effectiveValue: LibresignPolicySnapshotSignerIpGeolocationValue,
+ *     sourceScope: string,
+ * }
+ * @psalm-type LibresignSignatureRejectionCommentMode = 'disabled'|'optional'|'required'
+ * @psalm-type LibresignSignatureRejectionBehavior = 'cancel'|'continue'
+ * @psalm-type LibresignSignatureRejectionVisibility = 'requester'|'participants'|'public'
+ * @psalm-type LibresignPolicySnapshotSignatureRejectionBehaviorEntry = array{
+ *     effectiveValue: LibresignSignatureRejectionBehavior,
+ *     sourceScope: string,
+ * }
+ * @psalm-type LibresignPolicySnapshotSignatureRejectionCommentModeEntry = array{
+ *     effectiveValue: LibresignSignatureRejectionCommentMode,
+ *     sourceScope: string,
+ * }
+ * @psalm-type LibresignPolicySnapshotSignatureRejectionVisibilityEntry = array{
+ *     effectiveValue: LibresignSignatureRejectionVisibility,
+ *     sourceScope: string,
+ * }
  * @psalm-type LibresignValidatePolicySnapshot = array{
  *     docmdp?: LibresignPolicySnapshotNumericEntry,
  *     signature_flow?: LibresignPolicySnapshotEntry,
@@ -539,7 +623,14 @@ namespace OCA\Libresign;
  *     legal_information?: LibresignPolicySnapshotLegalInformationEntry,
  *     identification_documents?: LibresignPolicySnapshotIdentificationDocumentsEntry,
  *     identify_methods?: LibresignPolicySnapshotIdentifyMethodsEntry,
- *     signer_geolocation?: LibresignPolicySnapshotSignerGeolocationEntry,
+ *     signer_device_geolocation?: LibresignPolicySnapshotSignerGeolocationEntry,
+ *     signer_ip_geolocation?: LibresignPolicySnapshotSignerIpGeolocationEntry,
+ *     enable_observer_profile?: LibresignPolicySnapshotBooleanEntry,
+ *     rejection_enabled?: LibresignPolicySnapshotBooleanEntry,
+ *     rejection_behavior?: LibresignPolicySnapshotSignatureRejectionBehaviorEntry,
+ *     rejection_comment_mode?: LibresignPolicySnapshotSignatureRejectionCommentModeEntry,
+ *     rejection_visibility?: LibresignPolicySnapshotSignatureRejectionVisibilityEntry,
+ *     rejection_comment_visibility?: LibresignPolicySnapshotSignatureRejectionVisibilityEntry,
  * }
  * @psalm-type LibresignValidateMetadata = array{
  *     extension: string,
@@ -560,6 +651,9 @@ namespace OCA\Libresign;
  *     url: string,
  *     resolution: LibresignValidationPageResolution,
  * }
+ * @psalm-type LibresignValidatedChildSigner = LibresignSignerSummary&array{
+ *     visibleElements?: LibresignVisibleElement[],
+ * }
  * @psalm-type LibresignValidatedChildFile = array{
  *     id: int,
  *     uuid: string,
@@ -570,7 +664,7 @@ namespace OCA\Libresign;
  *     totalPages?: non-negative-int,
  *     size: non-negative-int,
  *     pdfVersion?: string,
- *     signers: list<LibresignSignerSummary>,
+ *     signers: list<LibresignValidatedChildSigner>,
  *     file?: string,
  *     metadata: LibresignValidateMetadata,
  * }
@@ -578,7 +672,7 @@ namespace OCA\Libresign;
  *     id: int,
  *     uuid: string,
  *     name: string,
- *     status: 0|1|2|3|4,
+ *     status: 0|1|2|3|4|6,
  *     statusText: string,
  *     nodeId: non-negative-int,
  *     nodeType: 'file'|'envelope',
@@ -724,7 +818,7 @@ namespace OCA\Libresign;
  *     created_at: string,
  *     file: array{
  *         name: string,
- *         status: 0|1|2|3|4,
+ *         status: 0|1|2|3|4|6,
  *         statusText: string,
  *         created_at: string,
  *         file: array{

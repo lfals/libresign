@@ -10,7 +10,6 @@ namespace OCA\Libresign\Tests\Unit\Service;
  */
 
 use DateTime;
-use OC\User\NoUserException;
 use OCA\Libresign\BackgroundJob\SignSingleFileJob;
 use OCA\Libresign\Db\File;
 use OCA\Libresign\Db\FileElement;
@@ -27,6 +26,7 @@ use OCA\Libresign\Db\UserElementMapper;
 use OCA\Libresign\Enum\DocMdpLevel;
 use OCA\Libresign\Enum\FileStatus;
 use OCA\Libresign\Enum\FileStatus as FileStatusEnum;
+use OCA\Libresign\Enum\ParticipantRole;
 use OCA\Libresign\Enum\SignRequestStatus;
 use OCA\Libresign\Events\SignedEvent;
 use OCA\Libresign\Events\SignedEventFactory;
@@ -39,12 +39,12 @@ use OCA\Libresign\Handler\SignEngine\Pkcs7Handler;
 use OCA\Libresign\Handler\SignEngine\SignEngineFactory;
 use OCA\Libresign\Handler\SignEngine\SignEngineHandler;
 use OCA\Libresign\Helper\JavaHelper;
-use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\Service\CertificateValidityPolicy;
 use OCA\Libresign\Service\Envelope\EnvelopeStatusDeterminer;
 use OCA\Libresign\Service\FileStatusService;
 use OCA\Libresign\Service\FolderService;
 use OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod;
+use OCA\Libresign\Service\IdentifyMethod\SignatureMethod\EmailToken;
 use OCA\Libresign\Service\IdentifyMethod\SignatureMethod\ISignatureMethod;
 use OCA\Libresign\Service\IdentifyMethodService;
 use OCA\Libresign\Service\PdfSignatureDetectionService;
@@ -61,12 +61,13 @@ use OCA\Libresign\Service\SignRequest\SignRequestService;
 use OCA\Libresign\Service\SignRequest\StatusService;
 use OCA\Libresign\Service\SubjectAlternativeNameService;
 use OCA\Libresign\Service\TsaValidationService;
+use OCA\Libresign\Service\Validation\IdentityDocumentValidator;
+use OCA\Libresign\Service\Validation\SignerValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
 use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\BackgroundJob\IJobList;
 use OCP\EventDispatcher\IEventDispatcher;
-use OCP\Files\Folder;
-use OCP\Files\IRootFolder;
 use OCP\Files\NotFoundException;
 use OCP\Files\NotPermittedException;
 use OCP\Http\Client\IClientService;
@@ -78,6 +79,7 @@ use OCP\IURLGenerator;
 use OCP\IUserSession;
 use OCP\Security\ICredentialsManager;
 use OCP\Security\ISecureRandom;
+use OCP\User\Exceptions\UserNotFoundException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
 use Psr\Log\LoggerInterface;
@@ -95,9 +97,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private FolderService&MockObject $folderService;
 	private LoggerInterface&MockObject $logger;
 	private IAppConfig $appConfig;
-	private ValidateHelper&MockObject $validateHelper;
+	private IdentityDocumentValidator&MockObject $identityDocumentValidator;
+	private SigningRequestValidator&MockObject $signingRequestValidator;
+	private SignerValidator&MockObject $signerValidator;
 	private SignerElementsService&MockObject $signerElementsService;
-	private IRootFolder&MockObject $root;
 	private IUserSession&MockObject $userSession;
 	private IDateTimeZone $dateTimeZone;
 	private FileElementMapper&MockObject $fileElementMapper;
@@ -145,9 +148,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->folderService = $this->createMock(FolderService::class);
 		$this->logger = $this->createMock(LoggerInterface::class);
 		$this->appConfig = $this->getMockAppConfigWithReset();
-		$this->validateHelper = $this->createMock(\OCA\Libresign\Helper\ValidateHelper::class);
+		$this->identityDocumentValidator = $this->createMock(IdentityDocumentValidator::class);
+		$this->signingRequestValidator = $this->createMock(SigningRequestValidator::class);
+		$this->signerValidator = $this->createMock(SignerValidator::class);
 		$this->signerElementsService = $this->createMock(SignerElementsService::class);
-		$this->root = $this->createMock(\OCP\Files\IRootFolder::class);
 		$this->userSession = $this->createMock(IUserSession::class);
 		$this->dateTimeZone = \OCP\Server::get(IDateTimeZone::class);
 		$this->fileElementMapper = $this->createMock(FileElementMapper::class);
@@ -312,14 +316,9 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$signRequestB->setId(200);
 		$signRequestB->setUuid('uuid-b');
 
-		$folder = $this->createMock(\OCP\Files\Folder::class);
-		$folder->method('getFirstNodeById')
-			->with(20)
+		$this->folderService->method('getReadableNodeById')
+			->with('user1', 20)
 			->willReturn($this->createMock(\OCP\Files\File::class));
-
-		$this->root->method('getUserFolder')
-			->with('user1')
-			->willReturn($folder);
 
 		$this->jobList->expects($this->once())
 			->method('add')
@@ -352,11 +351,9 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$signRequest->setId(200);
 		$signRequest->setUuid('uuid-b');
 
-		$folder = $this->createMock(Folder::class);
-		$folder->method('getFirstNodeById')
-			->with(20)
+		$this->folderService->method('getReadableNodeById')
+			->with('user1', 20)
 			->willReturn($this->createMock(\OCP\Files\File::class));
-		$this->root->method('getUserFolder')->willReturn($folder);
 
 		$this->credentialsManager->expects($this->once())
 			->method('store')
@@ -445,6 +442,46 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		);
 	}
 
+	public function testRequestCodeDoesNotPassDestinationToToken(): void {
+		$signRequest = new SignRequest();
+		$signRequest->setId(171);
+
+		$entity = (new IdentifyMethod())->fromParams([
+			'identifierKey' => 'email',
+			'identifierValue' => 'victim@example.test',
+			'signRequestId' => 171,
+		]);
+
+		$token = $this->createMock(EmailToken::class);
+		$token->expects($this->once())
+			->method('setEntity')
+			->with($entity);
+		$token->expects($this->once())
+			->method('requestCode')
+			->with();
+
+		$identifyMethod = $this->createMock(IIdentifyMethod::class);
+		$identifyMethod->method('getEntity')->willReturn($entity);
+		$identifyMethod->expects($this->once())
+			->method('getEmptyInstanceOfSignatureMethodByName')
+			->with(ISignatureMethod::SIGNATURE_METHOD_EMAIL_TOKEN)
+			->willReturn($token);
+
+		$this->identifyMethodService
+			->expects($this->once())
+			->method('getIdentifyMethodsFromSignRequestId')
+			->with(171)
+			->willReturn([
+				'email' => [$identifyMethod],
+			]);
+
+		$this->getService()->requestCode(
+			$signRequest,
+			'email',
+			ISignatureMethod::SIGNATURE_METHOD_EMAIL_TOKEN,
+		);
+	}
+
 	private function getService(array $methods = []): SignFileService|MockObject {
 		if ($methods) {
 			return $this->getMockBuilder(SignFileService::class)
@@ -458,9 +495,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 					$this->clientService,
 					$this->logger,
 					$this->appConfig,
-					$this->validateHelper,
+					$this->identityDocumentValidator,
+					$this->signingRequestValidator,
+					$this->signerValidator,
 					$this->signerElementsService,
-					$this->root,
 					$this->userSession,
 					$this->dateTimeZone,
 					$this->fileElementMapper,
@@ -503,9 +541,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			$this->clientService,
 			$this->logger,
 			$this->appConfig,
-			$this->validateHelper,
+			$this->identityDocumentValidator,
+			$this->signingRequestValidator,
+			$this->signerValidator,
 			$this->signerElementsService,
-			$this->root,
 			$this->userSession,
 			$this->dateTimeZone,
 			$this->fileElementMapper,
@@ -594,9 +633,6 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 
 		$file = new \OCA\Libresign\Db\File();
 		$file->setUserId('username');
-
-		$this->root->method('getUserFolder')
-			->willReturn($this->root);
 
 		$signRequest = new \OCA\Libresign\Db\SignRequest();
 		$this->getService()
@@ -852,11 +888,8 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$user = $this->createMock(\OCP\IUser::class);
 		$user->method('getUID')->willReturn('user1');
 
-		// Mock root folder for verifyFileExists
-		$mockUserFolder = $this->createMock(\OCP\Files\Folder::class);
 		$mockFile = $this->createMock(\OCP\Files\File::class);
-		$mockUserFolder->method('getFirstNodeById')->willReturn($mockFile);
-		$this->root->method('getUserFolder')->willReturn($mockUserFolder);
+		$this->folderService->method('getReadableNodeById')->willReturn($mockFile);
 
 		$capturedCredentials = [];
 		$this->credentialsManager->expects($this->exactly(2))
@@ -1040,6 +1073,30 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->assertSame(FileStatus::PARTIAL_SIGNED->value, $status);
 	}
 
+	public function testEvaluateStatusFromSignersIgnoresUnsignedObservers(): void {
+		$this->idDocsMapper
+			->method('getByFileId')
+			->willThrowException(new DoesNotExistException('no identification document'));
+
+		$signed = new SignRequest();
+		$signed->setId(1);
+		$signed->setSigned(new DateTime());
+
+		$observer = new SignRequest();
+		$observer->setId(2);
+		$observer->setParticipantRole(ParticipantRole::OBSERVER->value);
+
+		$service = $this->getService(['getSigners']);
+		$service->method('getSigners')->willReturn([$signed, $observer]);
+
+		$signRequest = new SignRequest();
+		$signRequest->setFileId(99);
+		$service->setSignRequest($signRequest);
+
+		$status = self::invokePrivate($service, 'evaluateStatusFromSigners');
+		$this->assertSame(FileStatus::SIGNED->value, $status);
+	}
+
 	#[DataProvider('providerGetEngineWillWorkWithLazyLoadedEngine')]
 	public function testGetEngineWillWorkWithLazyLoadedEngine(string $extension, string $instanceOf): void {
 		$expectedEngine = $this->createMock($instanceOf);
@@ -1204,7 +1261,9 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	}
 
 	public static function providerStoreUserMetadata(): array {
-		$geo = ['status' => 'collected', 'latitude' => 1.0, 'longitude' => 2.0];
+		$device = ['status' => 'collected', 'latitude' => 1.0, 'longitude' => 2.0];
+		$geo = ['device' => $device];
+		$ip = ['status' => 'resolved', 'sourceIp' => '81.2.69.160', 'countryCode' => 'GB'];
 
 		return [
 			// collect_metadata disabled: audit fields are ignored
@@ -1214,6 +1273,8 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			// geolocation is stored independently of collect_metadata
 			[false, null, ['geolocation' => $geo], ['geolocation' => $geo]],
 			[false, null, ['user-agent' => 'Mozilla/5.0', 'geolocation' => $geo], ['geolocation' => $geo]],
+			// device and ip coexist without overwriting each other
+			[false, ['geolocation' => $geo], ['geolocation' => ['ip' => $ip]], ['geolocation' => ['device' => $device, 'ip' => $ip]]],
 			// collect_metadata enabled: audit fields are stored
 			[true, null, [], null],
 			[true, null, ['user-agent' => 'Mozilla/5.0'], ['user-agent' => 'Mozilla/5.0']],
@@ -1940,20 +2001,14 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			$this->expectExceptionMessageMatches($exceptionMessage);
 		}
 		$leaf = $this->createMock($typeOfNode);
-		$userFolder = $this->createMock(\OCP\Files\Folder::class);
-		$userFolder->method('getFirstNodeById')->willReturn($leaf);
-		$this->root->method('getUserFolder')->willReturnCallback(function () use ($userFolder, $exceptionMessage) {
-			switch ($exceptionMessage) {
-				case '/User not found/':
-					throw new NoUserException();
-				case '/not have permission/':
-					throw new NotPermittedException();
-				case '/File not found/':
-					return $userFolder;
-				default:
-					return $userFolder;
-			}
+		$this->folderService->method('getReadableNodeById')->willReturnCallback(function () use ($leaf, $exceptionMessage) {
+			return match ($exceptionMessage) {
+				'/User not found/' => throw new UserNotFoundException(),
+				'/not have permission/' => throw new NotPermittedException(),
+				default => $leaf,
+			};
 		});
+
 		$actual = $this->invokePrivate($service, 'getNodeByIdUsingUid', ['', 1]);
 		$this->assertEquals($leaf, $actual);
 	}
@@ -2117,10 +2172,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$signRequest->setFileId(10);
 		$signRequest->setSigningOrder(0);
 
-		$this->validateHelper->expects($this->once())
+		$this->signingRequestValidator->expects($this->once())
 			->method('fileCanBeSigned')
 			->with($file);
-		$this->validateHelper->expects($this->once())
+		$this->signerValidator->expects($this->once())
 			->method('validateUuidFormat')
 			->with($uuid);
 		$this->signRequestMapper->expects($this->once())
@@ -2155,10 +2210,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$signRequest->setFileId(10);
 		$signRequest->setSigningOrder(0);
 
-		$this->validateHelper->expects($this->once())
+		$this->signingRequestValidator->expects($this->once())
 			->method('fileCanBeSigned')
 			->with($file);
-		$this->validateHelper->expects($this->once())
+		$this->identityDocumentValidator->expects($this->once())
 			->method('userCanApproveValidationDocuments')
 			->with($user, false)
 			->willReturn(true);
@@ -2259,10 +2314,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$identifyMethodB->setIdentifierKey(IdentifyMethodService::IDENTIFY_EMAIL);
 		$identifyMethodB->setIdentifierValue('other@example.test');
 
-		$this->validateHelper->expects($this->once())
+		$this->signingRequestValidator->expects($this->once())
 			->method('fileCanBeSigned')
 			->with($file);
-		$this->validateHelper->method('userCanApproveValidationDocuments')
+		$this->identityDocumentValidator->method('userCanApproveValidationDocuments')
 			->willReturn(false);
 		$this->signRequestMapper->expects($this->once())
 			->method('getByFileId')
@@ -2315,10 +2370,10 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$identifyMethod->setIdentifierKey(IdentifyMethodService::IDENTIFY_ACCOUNT);
 		$identifyMethod->setIdentifierValue('approver');
 
-		$this->validateHelper->expects($this->once())
+		$this->signingRequestValidator->expects($this->once())
 			->method('fileCanBeSigned')
 			->with($file);
-		$this->validateHelper->expects($this->once())
+		$this->identityDocumentValidator->expects($this->once())
 			->method('userCanApproveValidationDocuments')
 			->with($user, false)
 			->willReturn(true);
@@ -2724,17 +2779,14 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$service = $this->getService();
 
 		if ($scenario === 'exception') {
-			$this->root->method('getUserFolder')
-				->willThrowException(new NoUserException());
+			$this->folderService->method('getReadableNodeById')
+				->willThrowException(new UserNotFoundException());
 		} elseif ($scenario === 'file') {
-			$mockFile = $this->createMock(\OCP\Files\File::class);
-			$mockFolder = $this->createMock(\OCP\Files\Folder::class);
-			$mockFolder->method('getFirstNodeById')->willReturn($mockFile);
-			$this->root->method('getUserFolder')->willReturn($mockFolder);
+			$this->folderService->method('getReadableNodeById')
+				->willReturn($this->createMock(\OCP\Files\File::class));
 		} elseif ($scenario === 'folder') {
-			$mockFolder = $this->createMock(\OCP\Files\Folder::class);
-			$mockFolder->method('getFirstNodeById')->willReturn($mockFolder);
-			$this->root->method('getUserFolder')->willReturn($mockFolder);
+			$this->folderService->method('getReadableNodeById')
+				->willReturn($this->createMock(\OCP\Files\Folder::class));
 		}
 
 		$result = self::invokePrivate($service, 'verifyFileExists', [$uid, $nodeId]);
@@ -2763,7 +2815,6 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$originalFile->method('getExtension')->willReturn('pdf');
 		$originalFile->method('getPath')->willReturn('/admin/files/LibreSign/Document.pdf');
 		$originalFile->method('getOwner')->willReturn($owner);
-		$originalFile->method('getParentId')->willReturn(101);
 
 		$libreSignFile = new File();
 		$libreSignFile->setId(61);
@@ -2776,16 +2827,9 @@ final class SignFileServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			->with('Document.signed_61.pdf', 'signed-content')
 			->willReturn($createdFile);
 
-		$userFolder = $this->createMock(\OCP\Files\Folder::class);
-		$userFolder->expects($this->once())
-			->method('getFirstNodeById')
-			->with(101)
+		$originalFile->expects($this->once())
+			->method('getParent')
 			->willReturn($parentFolder);
-
-		$this->root->expects($this->once())
-			->method('getUserFolder')
-			->with('admin')
-			->willReturn($userFolder);
 
 		$this->userSession->expects($this->once())
 			->method('getUser')

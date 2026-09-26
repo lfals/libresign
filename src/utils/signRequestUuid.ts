@@ -3,8 +3,11 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+import { isObserverParticipant } from './participantRole.ts'
+
 type SignerLike = {
 	me?: boolean
+	participantRole?: string | null
 	sign_request_uuid?: string | null
 }
 
@@ -47,6 +50,11 @@ export function getSigningRouteUuid(
 	document: DocumentLike | null | undefined,
 	fallbackUuid: string | null = null,
 ): string | null {
+	const currentSigner = getCurrentSigner(document)
+	if (isObserverParticipant(currentSigner)) {
+		return null
+	}
+
 	const signerUuid = getCurrentSignerSignRequestUuid(document, fallbackUuid)
 	if (isNonEmptyString(signerUuid)) {
 		return signerUuid
@@ -57,6 +65,21 @@ export function getSigningRouteUuid(
 	}
 
 	return null
+}
+
+/**
+ * In the identification document approval context the route uuid is the
+ * file uuid, not a sign request uuid, and the backend needs
+ * `idDocApproval=true` to resolve it.
+ */
+export function isIdDocApprovalContext(
+	document: DocumentLike | null | undefined,
+	routeUuid: string | null | undefined,
+): boolean {
+	return document?.settings?.isApprover === true
+		&& isNonEmptyString(routeUuid)
+		&& isNonEmptyString(document?.uuid)
+		&& routeUuid === document.uuid
 }
 
 export function getValidationRouteUuid(document: DocumentLike | null | undefined): string | number | null {

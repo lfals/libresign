@@ -11,7 +11,10 @@ namespace OCA\Libresign\Service;
 use OCA\Libresign\Db\File as FileEntity;
 use OCA\Libresign\Db\FileMapper;
 use OCA\Libresign\Exception\LibresignException;
-use OCA\Libresign\Helper\ValidateHelper;
+use OCA\Libresign\Service\Validation\FileInputValidator;
+use OCA\Libresign\Service\Validation\SignerValidator;
+use OCA\Libresign\Service\Validation\SigningRequestValidator;
+use OCA\Libresign\Service\Validation\VisibleElementValidator;
 use OCP\IL10N;
 use OCP\IUser;
 
@@ -19,8 +22,11 @@ final class RequestSignatureWorkflowService {
 	public function __construct(
 		private IL10N $l10n,
 		private RequestSignatureService $requestSignatureService,
-		private ValidateHelper $validateHelper,
+		private SigningRequestValidator $signingRequestValidator,
+		private SignerValidator $signerValidator,
+		private VisibleElementValidator $visibleElementValidator,
 		private FileMapper $fileMapper,
+		private FileInputValidator $fileInputValidator,
 	) {
 	}
 
@@ -62,6 +68,8 @@ final class RequestSignatureWorkflowService {
 			throw new LibresignException($this->l10n->t('File or files parameter is required'));
 		}
 
+		$file = $this->fileInputValidator->normalizeNodeId($file);
+		$files = $this->normalizeNodeIds($files);
 		$resolvedPolicy = $this->resolvePolicyPayload($policy);
 		$data = [
 			'file' => $file,
@@ -123,6 +131,7 @@ final class RequestSignatureWorkflowService {
 		?string $name = null,
 		array $settings = [],
 	): array {
+		$file = $this->fileInputValidator->normalizeNodeId($file);
 		$resolvedPolicy = $this->resolvePolicyPayload($policy);
 		$data = [
 			'uuid' => $uuid,
@@ -139,11 +148,12 @@ final class RequestSignatureWorkflowService {
 			$data['status'] = $status;
 		}
 
-		$this->validateHelper->validateExistingFile($data);
-		$this->validateHelper->validateFileStatus($data);
-		$this->validateHelper->validateIdentifySigners($data);
+		$this->signingRequestValidator->validateExistingFile($data);
+		$this->signingRequestValidator->validateWorkflowIsNotClosedByUuid($uuid);
+		$this->signingRequestValidator->validateFileStatus($data);
+		$this->signerValidator->validateIdentifySigners($data);
 		if (!empty($visibleElements)) {
-			$this->validateHelper->validateVisibleElements($visibleElements, ValidateHelper::TYPE_VISIBLE_ELEMENT_PDF);
+			$this->visibleElementValidator->validateVisibleElements($visibleElements, FileInputValidator::TYPE_VISIBLE_ELEMENT_PDF);
 		}
 		$fileEntity = $this->requestSignatureService->save($data);
 
@@ -151,6 +161,17 @@ final class RequestSignatureWorkflowService {
 			'file' => $fileEntity,
 			'children' => $this->loadChildFilesIfEnvelope($fileEntity),
 		];
+	}
+
+	/**
+	 * @param list<array<string, mixed>> $files
+	 * @return list<array<string, mixed>>
+	 */
+	private function normalizeNodeIds(array $files): array {
+		return array_map(
+			fn (mixed $file): mixed => is_array($file) ? $this->fileInputValidator->normalizeNodeId($file) : $file,
+			$files,
+		);
 	}
 
 	/** @return list<FileEntity> */

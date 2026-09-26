@@ -671,6 +671,57 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/policies/compound/group/{groupId}/{parentPolicyKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save several group-level values of the same composite policy at once */
+        put: operations["policy-set-group-compound"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/policies/compound/user/{parentPolicyKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save several values of the same composite policy as user preferences */
+        put: operations["policy-set-user-preference-compound"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/policies/compound/user/{userId}/{parentPolicyKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save several values of the same composite policy for a target user (admin scope) */
+        put: operations["policy-set-user-policy-for-user-compound"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ocs/v2.php/apps/libresign/api/{apiVersion}/policies/user/{policyKey}": {
         parameters: {
             query?: never;
@@ -765,6 +816,40 @@ export type paths = {
         put?: never;
         /** Sign a file using file UUID */
         post: operations["sign_file-sign-by-signer-uuid"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/sign/file_id/{fileId}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject a signature request using file Id */
+        post: operations["sign_file-reject-by-file-id"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/sign/uuid/{uuid}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject a signature request using the signer UUID */
+        post: operations["sign_file-reject-by-signer-uuid"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1068,6 +1153,11 @@ export type components = {
             message: string;
         };
         DynamicMetadataValue: Record<string, never>;
+        EffectiveCompoundPolicyWriteResponse: components["schemas"]["MessageResponse"] & {
+            policies: {
+                [key: string]: components["schemas"]["EffectivePolicyState"];
+            };
+        };
         EffectivePoliciesResponse: {
             policies: {
                 [key: string]: components["schemas"]["EffectivePolicyState"];
@@ -1087,6 +1177,8 @@ export type components = {
             parentPolicyKey?: string;
             compositeChildren?: string[];
             mailProviderAvailable?: boolean;
+            validationUrlIsPrivate?: boolean;
+            observerProfileEnabled?: boolean;
         };
         EffectivePolicyResponse: {
             policy: components["schemas"]["EffectivePolicyState"];
@@ -1140,7 +1232,7 @@ export type components = {
                  * Format: int64
                  * @enum {integer}
                  */
-                status: 0 | 1 | 2 | 3 | 4;
+                status: 0 | 1 | 2 | 3 | 4 | 6;
                 statusText: string;
                 created_at: string;
                 file: {
@@ -1252,6 +1344,11 @@ export type components = {
         GeolocationCollectionStatus: "collected" | "denied" | "unavailable" | "skipped";
         /** @enum {string} */
         GeolocationRequirement: "disabled" | "required";
+        GroupCompoundPolicyWriteResponse: components["schemas"]["MessageResponse"] & {
+            policies: {
+                [key: string]: components["schemas"]["GroupPolicyState"];
+            };
+        };
         GroupPolicyResponse: {
             policy: components["schemas"]["GroupPolicyState"];
         };
@@ -1326,10 +1423,10 @@ export type components = {
         };
         NewFile: {
             base64?: string;
-            /** Format: int64 */
-            nodeId?: number;
+            nodeId?: number | string;
             path?: string;
             url?: string;
+            name?: string;
         };
         NewSigner: {
             identifyMethods: {
@@ -1345,7 +1442,8 @@ export type components = {
             signingOrder?: number;
             /** Format: int64 */
             status?: number;
-            geolocationRequired?: boolean;
+            participantRole?: components["schemas"]["ParticipantRole"];
+            deviceGeolocationRequired?: boolean;
         };
         Notify: {
             /** Format: int64 */
@@ -1371,7 +1469,13 @@ export type components = {
             first: string | null;
         };
         /** @enum {string} */
+        ParticipantRole: "signer" | "observer";
+        /** @enum {string} */
         PolicyScope: "system" | "group" | "user";
+        PolicySnapshotBooleanEntry: {
+            effectiveValue: boolean;
+            sourceScope: string;
+        };
         PolicySnapshotEntry: {
             effectiveValue: string;
             sourceScope: string;
@@ -1419,12 +1523,31 @@ export type components = {
             hashOfIdentifier?: string;
             hasSignatureFile?: boolean;
         };
+        PolicySnapshotSignatureRejectionBehaviorEntry: {
+            effectiveValue: components["schemas"]["SignatureRejectionBehavior"];
+            sourceScope: string;
+        };
+        PolicySnapshotSignatureRejectionCommentModeEntry: {
+            effectiveValue: components["schemas"]["SignatureRejectionCommentMode"];
+            sourceScope: string;
+        };
+        PolicySnapshotSignatureRejectionVisibilityEntry: {
+            effectiveValue: components["schemas"]["SignatureRejectionVisibility"];
+            sourceScope: string;
+        };
         PolicySnapshotSignerGeolocationEntry: {
             effectiveValue: components["schemas"]["PolicySnapshotSignerGeolocationValue"];
             sourceScope: string;
         };
         PolicySnapshotSignerGeolocationValue: {
             mode: components["schemas"]["SignerGeolocationPolicyMode"];
+        };
+        PolicySnapshotSignerIpGeolocationEntry: {
+            effectiveValue: components["schemas"]["PolicySnapshotSignerIpGeolocationValue"];
+            sourceScope: string;
+        };
+        PolicySnapshotSignerIpGeolocationValue: {
+            mode: components["schemas"]["SignerIpGeolocationPolicyMode"];
         };
         ProgressError: {
             message: string;
@@ -1533,6 +1656,22 @@ export type components = {
             emailToken?: components["schemas"]["SignatureMethodEmailToken"];
             password?: components["schemas"]["SignatureMethodPassword"];
         };
+        /** @enum {string} */
+        SignatureRejectionBehavior: "cancel" | "continue";
+        /** @enum {string} */
+        SignatureRejectionCommentMode: "disabled" | "optional" | "required";
+        SignatureRejectionResponse: {
+            message: string;
+            /** Format: int64 */
+            signRequestId: number;
+            /** Format: int64 */
+            status: number;
+            statusText: string;
+            rejectedAt: string;
+            workflowCanceled: boolean;
+        };
+        /** @enum {string} */
+        SignatureRejectionVisibility: "requester" | "participants" | "public";
         SignerCertificateInfo: {
             serialNumber?: string;
             serialNumberHex?: string;
@@ -1555,6 +1694,8 @@ export type components = {
             sign_request_uuid?: string;
             hash_algorithm?: string;
             covers_entire_document?: boolean;
+            /** @enum {string} */
+            document_modification_state?: "unchanged" | "unsigned_content" | "trailing_data" | "invalid_byte_range" | "invalid_eof_boundary";
             me: boolean;
             /** Format: int64 */
             signingOrder?: number;
@@ -1562,8 +1703,9 @@ export type components = {
             signatureMethods?: components["schemas"]["SignatureMethods"];
             uid?: string;
             metadata?: components["schemas"]["SignerMetadata"];
+            rejection?: components["schemas"]["SignerRejection"];
         };
-        SignerGeolocation: {
+        SignerDeviceGeolocation: {
             status: components["schemas"]["GeolocationCollectionStatus"];
             /** Format: double */
             latitude?: number;
@@ -1574,15 +1716,46 @@ export type components = {
             /** Format: int64 */
             timestamp?: number;
         };
+        SignerGeolocation: {
+            device?: components["schemas"]["SignerDeviceGeolocation"];
+            ip?: components["schemas"]["SignerIpGeolocation"];
+        };
         /** @enum {string} */
         SignerGeolocationPolicyMode: "disabled" | "optional" | "required";
+        SignerIpGeolocation: {
+            status: components["schemas"]["SignerIpGeolocationStatus"];
+            sourceIp?: string;
+            countryCode?: string;
+            country?: string;
+            regionCode?: string;
+            region?: string;
+            city?: string;
+            /** Format: double */
+            latitude?: number;
+            /** Format: double */
+            longitude?: number;
+            /** Format: int64 */
+            accuracyRadius?: number;
+            reason?: components["schemas"]["SignerIpGeolocationUnavailableReason"];
+        };
+        /** @enum {string} */
+        SignerIpGeolocationPolicyMode: "disabled" | "enabled";
+        /** @enum {string} */
+        SignerIpGeolocationStatus: "resolved" | "not_found" | "unavailable";
+        /** @enum {string} */
+        SignerIpGeolocationUnavailableReason: "database_not_ready" | "address_unavailable" | "lookup_failed";
         SignerMetadata: {
             "remote-address"?: string;
             "user-agent"?: string;
-            geolocationRequirement?: components["schemas"]["GeolocationRequirement"];
+            deviceGeolocationRequirement?: components["schemas"]["GeolocationRequirement"];
             geolocation?: components["schemas"]["SignerGeolocation"];
             notify?: components["schemas"]["Notify"][];
             certificate_info?: components["schemas"]["SignerCertificateInfo"];
+        };
+        SignerRejection: {
+            rejectedAt: string;
+            comment?: string;
+            commentPrivate?: boolean;
         };
         SignerSummary: {
             /** Format: int64 */
@@ -1595,8 +1768,9 @@ export type components = {
              * Format: int64
              * @enum {integer}
              */
-            status: 0 | 1 | 2;
+            status: 0 | 1 | 2 | 3 | 4;
             statusText: string;
+            participantRole?: components["schemas"]["ParticipantRole"];
         };
         SigningJob: {
             /** @enum {string} */
@@ -1608,6 +1782,11 @@ export type components = {
             status: string;
         };
         SystemPolicyWriteResponse: components["schemas"]["MessageResponse"] & components["schemas"]["EffectivePolicyResponse"];
+        UserCompoundPolicyWriteResponse: components["schemas"]["MessageResponse"] & {
+            policies: {
+                [key: string]: components["schemas"]["UserPolicyState"];
+            };
+        };
         UserElement: {
             /** Format: int64 */
             id: number;
@@ -1662,7 +1841,14 @@ export type components = {
             legal_information?: components["schemas"]["PolicySnapshotLegalInformationEntry"];
             identification_documents?: components["schemas"]["PolicySnapshotIdentificationDocumentsEntry"];
             identify_methods?: components["schemas"]["PolicySnapshotIdentifyMethodsEntry"];
-            signer_geolocation?: components["schemas"]["PolicySnapshotSignerGeolocationEntry"];
+            signer_device_geolocation?: components["schemas"]["PolicySnapshotSignerGeolocationEntry"];
+            signer_ip_geolocation?: components["schemas"]["PolicySnapshotSignerIpGeolocationEntry"];
+            enable_observer_profile?: components["schemas"]["PolicySnapshotBooleanEntry"];
+            rejection_enabled?: components["schemas"]["PolicySnapshotBooleanEntry"];
+            rejection_behavior?: components["schemas"]["PolicySnapshotSignatureRejectionBehaviorEntry"];
+            rejection_comment_mode?: components["schemas"]["PolicySnapshotSignatureRejectionCommentModeEntry"];
+            rejection_visibility?: components["schemas"]["PolicySnapshotSignatureRejectionVisibilityEntry"];
+            rejection_comment_visibility?: components["schemas"]["PolicySnapshotSignatureRejectionVisibilityEntry"];
         };
         ValidatedChildFile: {
             /** Format: int64 */
@@ -1679,9 +1865,12 @@ export type components = {
             /** Format: int64 */
             size: number;
             pdfVersion?: string;
-            signers: components["schemas"]["SignerSummary"][];
+            signers: components["schemas"]["ValidatedChildSigner"][];
             file?: string;
             metadata: components["schemas"]["ValidateMetadata"];
+        };
+        ValidatedChildSigner: components["schemas"]["SignerSummary"] & {
+            visibleElements?: components["schemas"]["VisibleElement"][];
         };
         ValidatedFile: {
             /** Format: int64 */
@@ -1692,7 +1881,7 @@ export type components = {
              * Format: int64
              * @enum {integer}
              */
-            status: 0 | 1 | 2 | 3 | 4;
+            status: 0 | 1 | 2 | 3 | 4 | 6;
             statusText: string;
             /** Format: int64 */
             nodeId: number;
@@ -2369,6 +2558,20 @@ export interface operations {
                         ocs: {
                             meta: components["schemas"]["OCSMeta"];
                             data: components["schemas"]["ValidatedFileResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: unknown;
                         };
                     };
                 };
@@ -4215,6 +4418,232 @@ export interface operations {
             };
         };
     };
+    "policy-set-group-compound": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+                /** @description Group identifier that receives the policy bindings. */
+                groupId: string;
+                /** @description Policy identifier the other settings are grouped under. */
+                parentPolicyKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Values to persist for the group, keyed by policy identifier.
+                     * @default {}
+                     */
+                    values?: {
+                        [key: string]: (boolean | number | string | {
+                            [key: string]: Record<string, never>;
+                        }) | null;
+                    };
+                    /**
+                     * @description Whether users and requests below this group may override each saved value, keyed by policy identifier.
+                     * @default {}
+                     */
+                    allowChildOverride?: {
+                        [key: string]: boolean;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["GroupCompoundPolicyWriteResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid policy value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ErrorResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ErrorResponse"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "policy-set-user-preference-compound": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+                /** @description Policy identifier the other settings are grouped under. */
+                parentPolicyKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Values to persist as the current user's defaults, keyed by policy identifier.
+                     * @default {}
+                     */
+                    values?: {
+                        [key: string]: (boolean | number | string | {
+                            [key: string]: Record<string, never>;
+                        }) | null;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["EffectiveCompoundPolicyWriteResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid policy value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ErrorResponse"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "policy-set-user-policy-for-user-compound": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+                /** @description Target user identifier that receives the policy assignments. */
+                userId: string;
+                /** @description Policy identifier the other settings are grouped under. */
+                parentPolicyKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Values to persist for the target user, keyed by policy identifier.
+                     * @default {}
+                     */
+                    values?: {
+                        [key: string]: (boolean | number | string | {
+                            [key: string]: Record<string, never>;
+                        }) | null;
+                    };
+                    /**
+                     * @description Whether the target user may still override each assigned value, keyed by policy identifier.
+                     * @default {}
+                     */
+                    allowChildOverride?: {
+                        [key: string]: boolean;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["UserCompoundPolicyWriteResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid policy value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ErrorResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ErrorResponse"];
+                        };
+                    };
+                };
+            };
+        };
+    };
     "policy-set-user-preference": {
         parameters: {
             query?: never;
@@ -4332,7 +4761,7 @@ export interface operations {
             content: {
                 "application/json": {
                     /**
-                     * @description Collection of signers who must sign the document. Use identifyMethods as the canonical format. Other supported fields: displayName, description, notify, signingOrder, status, geolocationRequired
+                     * @description Collection of signers who must sign the document. Use identifyMethods as the canonical format. Other supported fields: displayName, description, notify, signingOrder, status, deviceGeolocationRequired
                      * @default []
                      */
                     signers?: components["schemas"]["NewSigner"][];
@@ -4347,7 +4776,7 @@ export interface operations {
                      */
                     settings?: components["schemas"]["FolderSettings"];
                     /**
-                     * @description File object. Supports nodeId, url, base64 or path.
+                     * @description File object. Supports nodeId (a non-negative integer or its canonical decimal string, as Nextcloud node ids can exceed a JavaScript number), url, base64 or path.
                      * @default []
                      */
                     file?: components["schemas"]["NewFile"];
@@ -4426,7 +4855,7 @@ export interface operations {
                     uuid?: string | null;
                     /** @description Visible elements on document */
                     visibleElements?: components["schemas"]["VisibleElement"][] | null;
-                    /** @description File object. Supports nodeId, url, base64 or path when creating a new request. */
+                    /** @description File object. Supports nodeId (a non-negative integer or its canonical decimal string), url, base64 or path when creating a new request. */
                     file?: components["schemas"]["NewFile"];
                     /**
                      * Format: int64
@@ -4590,7 +5019,7 @@ export interface operations {
                      * @description Device-reported geolocation metadata submitted by the signing client
                      * @default {}
                      */
-                    geolocation?: {
+                    deviceGeolocation?: {
                         [key: string]: Record<string, never>;
                     };
                 };
@@ -4732,7 +5161,7 @@ export interface operations {
                      * @description Device-reported geolocation metadata submitted by the signing client
                      * @default {}
                      */
-                    geolocation?: {
+                    deviceGeolocation?: {
                         [key: string]: Record<string, never>;
                     };
                 };
@@ -4763,6 +5192,128 @@ export interface operations {
                         ocs: {
                             meta: components["schemas"]["OCSMeta"];
                             data: components["schemas"]["SignActionErrorResponse"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "sign_file-reject-by-file-id": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+                /** @description Id of LibreSign file */
+                fileId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Justification sent by the signer, when the document policy accepts comments
+                     * @default
+                     */
+                    comment?: string;
+                    /**
+                     * @description Keep the comment visible only to who requested the signature
+                     * @default false
+                     */
+                    privateComment?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["SignatureRejectionResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["MessageResponse"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "sign_file-reject-by-signer-uuid": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+                /** @description UUID of the signer */
+                uuid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Justification sent by the signer, when the document policy accepts comments
+                     * @default
+                     */
+                    comment?: string;
+                    /**
+                     * @description Keep the comment visible only to who requested the signature
+                     * @default false
+                     */
+                    privateComment?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["SignatureRejectionResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["MessageResponse"];
                         };
                     };
                 };
@@ -4826,8 +5377,6 @@ export interface operations {
                     identifyMethod?: "account" | "email" | null;
                     /** @description Method used to sign the document, i.e. emailToken, account, clickToSign, smsToken, signalToken, telegramToken, whatsappToken, xmppToken */
                     signMethod?: string | null;
-                    /** @description Identify value, i.e. the signer email, account or phone number */
-                    identify?: string | null;
                 };
             };
         };
@@ -4886,8 +5435,6 @@ export interface operations {
                     identifyMethod?: "account" | "email" | null;
                     /** @description Method used to sign the document, i.e. emailToken, account, clickToSign, smsToken, signalToken, telegramToken, whatsappToken, xmppToken */
                     signMethod?: string | null;
-                    /** @description Identify value, i.e. the signer email, account or phone number */
-                    identify?: string | null;
                 };
             };
         };

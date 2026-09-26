@@ -14,7 +14,10 @@ import type { useFilesStore as useFilesStoreType } from '../../../store/files.js
 import { usePoliciesStore } from '../../../store/policies'
 import RequestSignatureTab from '../../../components/RightSidebar/RequestSignatureTab.vue'
 import { useFilesStore } from '../../../store/files.js'
-import { FILE_STATUS } from '../../../constants.js'
+import { useUserConfigStore } from '../../../store/userconfig.js'
+import { FILE_STATUS, SIGN_REQUEST_STATUS } from '../../../constants.js'
+import { showError, showSuccess } from '@nextcloud/dialogs'
+import { PARTICIPANT_ROLE } from '../../../utils/participantRole.ts'
 
 const { capabilitiesState, generateUrlMock } = vi.hoisted(() => ({
 	capabilitiesState: { signElementsAvailable: true },
@@ -38,6 +41,7 @@ vi.mock('@nextcloud/initial-state', () => ({
 			return {
 				'sign-elements': { 'is-available': true },
 				'identification_documents': { enabled: false },
+				warn_without_visible_signature_fields: true,
 			}
 		}
 		if (key === 'can_request_sign') { return true }
@@ -95,6 +99,14 @@ vi.mock('@nextcloud/event-bus', () => ({
 }))
 
 vi.mock('@nextcloud/dialogs')
+vi.mock('../../../logger.js', () => ({
+	default: {
+		error: vi.fn(),
+		warn: vi.fn(),
+		info: vi.fn(),
+		debug: vi.fn(),
+	},
+}))
 vi.mock('@nextcloud/axios', () => ({
 	default: {
 		get: vi.fn(),
@@ -117,6 +129,7 @@ vi.mock('@libresign/pdf-elements', () => ({
 describe('RequestSignatureTab - Critical Business Rules', () => {
 	let wrapper: VueWrapper<any>
 	let filesStore: ReturnType<typeof useFilesStoreType>
+	let userConfigStore: ReturnType<typeof useUserConfigStore>
 
 	const createEffectivePoliciesResponse = (policyOverrides: Record<string, unknown> = {}) => ({
 		data: {
@@ -194,37 +207,49 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 	const updateMethods = async (methods: unknown[]) => {
 		await setVmState({ methods })
 	}
+	const mockEffectivePoliciesAxios = (policyOverrides: Record<string, unknown> = {}) => {
+		const response = createEffectivePoliciesResponse(policyOverrides)
+		vi.mocked(axios.get).mockImplementation(async (url: string) => {
+			if (url.includes('/apps/libresign/api/v1/policies/effective')) {
+				return response as Awaited<ReturnType<typeof axios.get>>
+			}
+
+			return { data: { ocs: { data: null } } } as Awaited<ReturnType<typeof axios.get>>
+		})
+		return response.data.ocs.data.policies
+	}
 	const updateIdentifyMethodsPolicy = async (effectiveValue: unknown) => {
 		const policiesStore = usePoliciesStore()
+		const policies = mockEffectivePoliciesAxios()
 		policiesStore.setPolicies({
-			signature_flow: createSignatureFlowPolicy(),
-			add_footer: createEffectivePoliciesResponse().data.ocs.data.policies.add_footer,
+			signature_flow: policies.signature_flow,
+			add_footer: policies.add_footer,
 			identify_methods: {
-				...createEffectivePoliciesResponse().data.ocs.data.policies.identify_methods,
+				...policies.identify_methods,
 				effectiveValue,
 			},
 		})
+		await flushPromises()
 		await wrapper.vm.$nextTick()
 	}
 	const updatePolicies = async (policyOverrides: Record<string, unknown>) => {
 		const policiesStore = usePoliciesStore()
-		policiesStore.setPolicies({
-			signature_flow: createSignatureFlowPolicy(policyOverrides),
-			add_footer: createEffectivePoliciesResponse().data.ocs.data.policies.add_footer,
-			identify_methods: createEffectivePoliciesResponse().data.ocs.data.policies.identify_methods,
-		})
+		policiesStore.setPolicies(mockEffectivePoliciesAxios(policyOverrides))
+		await flushPromises()
 		await wrapper.vm.$nextTick()
 	}
 	const updateFooterPolicy = async (policyOverrides: Record<string, unknown>) => {
 		const policiesStore = usePoliciesStore()
+		const policies = mockEffectivePoliciesAxios()
 		policiesStore.setPolicies({
-			signature_flow: createSignatureFlowPolicy(),
+			signature_flow: policies.signature_flow,
 			add_footer: {
-				...createEffectivePoliciesResponse().data.ocs.data.policies.add_footer,
+				...policies.add_footer,
 				...policyOverrides,
 			},
-			identify_methods: createEffectivePoliciesResponse().data.ocs.data.policies.identify_methods,
+			identify_methods: policies.identify_methods,
 		})
+		await flushPromises()
 		await wrapper.vm.$nextTick()
 	}
 
@@ -235,8 +260,19 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 		global: {
 			stubs: {
 				EnvelopeFilesList: { name: 'EnvelopeFilesList', template: '<div><slot /></div>' },
-				NcButton: true,
-				NcCheckboxRadioSwitch: true,
+				NcDialog: { name: 'NcDialog', template: '<div class="nc-dialog"><slot /><slot name="actions" /></div>' },
+				NcButton: {
+					name: 'NcButton',
+					props: ['disabled', 'variant'],
+					emits: ['click'],
+					template: '<button :disabled="disabled" @click="$emit(\'click\', $event)"><slot /><slot name="icon" /></button>',
+				},
+				NcCheckboxRadioSwitch: {
+					name: 'NcCheckboxRadioSwitch',
+					props: ['modelValue', 'type', 'disabled'],
+					emits: ['update:modelValue', 'change'],
+					template: '<label class="nc-checkbox-radio-switch"><input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked); $emit(\'change\', $event.target.checked)" /><slot /></label>',
+				},
 				NcNoteCard: true,
 				NcActionInput: true,
 				NcActionButton: true,
@@ -263,16 +299,10 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 		capabilitiesState.signElementsAvailable = true
 		generateUrlMock.mockClear()
 		vi.mocked(emit).mockClear()
-		vi.mocked(axios.get).mockImplementation(async (url: string) => {
-			if (url.includes('/apps/libresign/api/v1/policies/effective')) {
-				return createEffectivePoliciesResponse() as Awaited<ReturnType<typeof axios.get>>
-			}
-
-			return { data: { ocs: { data: null } } } as Awaited<ReturnType<typeof axios.get>>
-		})
 		filesStore = useFilesStore()
+		userConfigStore = useUserConfigStore()
 		const policiesStore = usePoliciesStore()
-		policiesStore.setPolicies(createEffectivePoliciesResponse().data.ocs.data.policies)
+		policiesStore.setPolicies(mockEffectivePoliciesAxios())
 
 		await filesStore.addFile({
 			id: 1,
@@ -420,6 +450,18 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 
 		it('hides when document has only one signer', async () => {
 			await updateFile({ signers: [{ email: 'test@example.com', signed: [] }] })
+
+			expect(wrapper.vm.showPreserveOrder).toBe(false)
+		})
+
+		it('hides when document has one signer and observers', async () => {
+			await updateFile({
+				status: FILE_STATUS.DRAFT,
+				signers: [
+					{ email: 'test@example.com', signed: [], participantRole: 'signer' },
+					{ email: 'observer@example.com', signed: [], participantRole: 'observer' },
+				],
+			})
 
 			expect(wrapper.vm.showPreserveOrder).toBe(false)
 		})
@@ -729,6 +771,64 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 
 			expect(wrapper.vm.showRequestButton).toBe(false)
 		})
+
+		it('hides request action when only observers are present', async () => {
+			await updateFile({
+				status: FILE_STATUS.DRAFT,
+				signatureFlow: 'parallel',
+				signers: [{
+					participantRole: 'observer',
+					email: 'witness@example.com',
+					signed: [],
+					status: 0,
+				}],
+			})
+
+			expect(wrapper.vm.showRequestButton).toBe(false)
+		})
+	})
+
+	describe('RULE: signature request requires signers', () => {
+		it('shows error toast when requesting signatures with only observers', async () => {
+			await updateFile({
+				status: FILE_STATUS.DRAFT,
+				signatureFlow: 'parallel',
+				signers: [{
+					participantRole: 'observer',
+					email: 'witness@example.com',
+					signed: [],
+					status: 0,
+				}],
+			})
+
+			await wrapper.vm.request()
+
+			expect(showError).toHaveBeenCalledWith('At least one signer is required')
+			expect(wrapper.vm.showConfirmRequest).toBe(false)
+		})
+
+		it('shows error toast when confirm request API rejects observer-only payload', async () => {
+			await updateFile({
+				status: FILE_STATUS.DRAFT,
+				signatureFlow: 'parallel',
+				signers: [{
+					participantRole: 'signer',
+					email: 'signer@example.com',
+					signed: [],
+					status: 0,
+				}],
+			})
+			vi.spyOn(filesStore, 'saveOrUpdateSignatureRequest').mockResolvedValue({
+				success: false,
+				message: 'At least one signer is required',
+			})
+
+			await wrapper.vm.confirmRequest()
+
+			expect(showError).toHaveBeenCalledWith('At least one signer is required')
+			expect(showSuccess).not.toHaveBeenCalled()
+			expect(wrapper.vm.showConfirmRequest).toBe(false)
+		})
 	})
 
 	describe('RULE: showSigningProgress when document active', () => {
@@ -803,6 +903,7 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 					return {
 						'sign-elements': { 'is-available': true },
 						'identification_documents': { enabled: false },
+						warn_without_visible_signature_fields: true,
 					}
 				}
 				if (key === 'can_request_sign') { return true }
@@ -1005,6 +1106,154 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 			const signer = { email: 'test@example.com', signed: [], status: 1, signRequestId: 10 }
 
 			expect(wrapper.vm.canSendReminder(signer)).toBe(false)
+		})
+
+		it('blocks reminder for observers', async () => {
+			filesStore.canRequestSign = true
+			await updateFile({
+				status: FILE_STATUS.ABLE_TO_SIGN,
+				signatureFlow: 'parallel',
+				signers: [{
+					email: 'observer@example.com',
+					status: SIGN_REQUEST_STATUS.OBSERVING,
+					signRequestId: 10,
+					participantRole: PARTICIPANT_ROLE.OBSERVER,
+				}],
+			})
+			const observer = {
+				email: 'observer@example.com',
+				status: SIGN_REQUEST_STATUS.OBSERVING,
+				signRequestId: 10,
+				participantRole: PARTICIPANT_ROLE.OBSERVER,
+			}
+
+			expect(wrapper.vm.canSendReminder(observer)).toBe(false)
+		})
+	})
+
+	describe('RULE: authenticated observer uses a read-only request sidebar', () => {
+		it('hides edit and signing actions when the current user only observes', async () => {
+			filesStore.canRequestSign = false
+			await updateFile({
+				status: FILE_STATUS.ABLE_TO_SIGN,
+				detailsLoaded: true,
+				signatureFlow: 'parallel',
+				signers: [
+					{
+						displayName: 'Observer Me',
+						me: true,
+						status: SIGN_REQUEST_STATUS.OBSERVING,
+						signRequestId: 10,
+						participantRole: PARTICIPANT_ROLE.OBSERVER,
+						sign_request_uuid: 'observer-uuid',
+					},
+					{
+						displayName: 'Signer Name',
+						me: false,
+						status: SIGN_REQUEST_STATUS.ABLE_TO_SIGN,
+						signRequestId: 11,
+						participantRole: PARTICIPANT_ROLE.SIGNER,
+						sign_request_uuid: 'signer-uuid',
+					},
+				],
+			})
+
+			expect(filesStore.isObservingOnly()).toBe(true)
+			expect(wrapper.vm.isReadOnlyObserver).toBe(true)
+			expect(wrapper.vm.showSaveButton).toBe(false)
+			expect(wrapper.vm.showRequestButton).toBe(false)
+			expect(wrapper.vm.showViewPositionsButton).toBe(true)
+			expect(wrapper.vm.participantListEvent).toBe('')
+			expect(filesStore.canSign()).toBe(false)
+		})
+
+		it('hides signature position actions when the request has only observers', async () => {
+			filesStore.canRequestSign = true
+			await updateFile({
+				status: FILE_STATUS.DRAFT,
+				detailsLoaded: true,
+				signatureFlow: 'parallel',
+				signers: [
+					{
+						displayName: 'Only Observer',
+						me: false,
+						status: SIGN_REQUEST_STATUS.DRAFT,
+						signRequestId: 10,
+						participantRole: PARTICIPANT_ROLE.OBSERVER,
+					},
+				],
+			})
+
+			expect(wrapper.vm.signingParticipantCount).toBe(0)
+			expect(wrapper.vm.showsPositionEditor).toBe(false)
+			expect(wrapper.vm.showSaveButton).toBe(false)
+			expect(wrapper.vm.showViewPositionsButton).toBe(false)
+		})
+	})
+
+	describe('RULE: canSendObserverNotification for observers', () => {
+		it('allows sending a notification when the observer is watching the request', async () => {
+			filesStore.canRequestSign = true
+			await updateFile({
+				status: FILE_STATUS.ABLE_TO_SIGN,
+				signatureFlow: 'parallel',
+				signers: [{
+					email: 'observer@example.com',
+					status: SIGN_REQUEST_STATUS.OBSERVING,
+					signRequestId: 10,
+					participantRole: PARTICIPANT_ROLE.OBSERVER,
+				}],
+			})
+			const observer = {
+				email: 'observer@example.com',
+				status: SIGN_REQUEST_STATUS.OBSERVING,
+				signRequestId: 10,
+				participantRole: PARTICIPANT_ROLE.OBSERVER,
+			}
+
+			expect(wrapper.vm.canSendObserverNotification(observer)).toBe(true)
+		})
+
+		it('blocks observer notification while the document is still a draft', async () => {
+			filesStore.canRequestSign = true
+			await updateFile({
+				status: FILE_STATUS.DRAFT,
+				signatureFlow: 'parallel',
+				signers: [{
+					email: 'observer@example.com',
+					status: SIGN_REQUEST_STATUS.DRAFT,
+					signRequestId: 10,
+					participantRole: PARTICIPANT_ROLE.OBSERVER,
+				}],
+			})
+			const observer = {
+				email: 'observer@example.com',
+				status: SIGN_REQUEST_STATUS.DRAFT,
+				signRequestId: 10,
+				participantRole: PARTICIPANT_ROLE.OBSERVER,
+			}
+
+			expect(wrapper.vm.canSendObserverNotification(observer)).toBe(false)
+		})
+
+		it('blocks observer notification for signing participants', async () => {
+			filesStore.canRequestSign = true
+			await updateFile({
+				status: FILE_STATUS.ABLE_TO_SIGN,
+				signatureFlow: 'parallel',
+				signers: [{
+					email: 'test@example.com',
+					status: SIGN_REQUEST_STATUS.ABLE_TO_SIGN,
+					signRequestId: 10,
+				}],
+			})
+			const signer = {
+				email: 'test@example.com',
+				status: SIGN_REQUEST_STATUS.ABLE_TO_SIGN,
+				signRequestId: 10,
+			}
+
+			expect(wrapper.vm.canSendObserverNotification(signer)).toBe(false)
 		})
 	})
 
@@ -1307,6 +1556,57 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 			expect(wrapper.vm.hasSignersWithDisabledMethods).toBe(false)
 		})
 
+		it('does not treat missing policy catalog as disabled methods', async () => {
+			await updateMethods([])
+			await updateFile({
+				signers: [
+					{ email: 'test1@example.com', signed: [], identifyMethods: [{ method: 'email' }] },
+				],
+			})
+			expect(wrapper.vm.hasSignersWithDisabledMethods).toBe(false)
+		})
+
+		it('does not treat unknown identify methods as disabled', async () => {
+			await updateMethods([{ name: 'email', enabled: true }])
+			await updateFile({
+				signers: [
+					{ email: 'test1@example.com', signed: [], identifyMethods: [{ method: 'account' }] },
+				],
+			})
+			expect(wrapper.vm.hasSignersWithDisabledMethods).toBe(false)
+		})
+
+		it('hides disabled-methods warning for read-only observers', async () => {
+			await updateMethods([{ name: 'sms', enabled: false }])
+			filesStore.canRequestSign = false
+			await updateFile({
+				status: FILE_STATUS.ABLE_TO_SIGN,
+				signers: [
+					{
+						displayName: 'Observer Me',
+						me: true,
+						status: SIGN_REQUEST_STATUS.OBSERVING,
+						signRequestId: 10,
+						participantRole: PARTICIPANT_ROLE.OBSERVER,
+						signed: [],
+						identifyMethods: [{ method: 'sms' }],
+					},
+					{
+						displayName: 'Signer Name',
+						me: false,
+						status: SIGN_REQUEST_STATUS.ABLE_TO_SIGN,
+						signRequestId: 11,
+						participantRole: PARTICIPANT_ROLE.SIGNER,
+						signed: [],
+						identifyMethods: [{ method: 'sms' }],
+					},
+				],
+			})
+			expect(filesStore.isObservingOnly()).toBe(true)
+			expect(wrapper.vm.isReadOnlyObserver).toBe(true)
+			expect(wrapper.vm.hasSignersWithDisabledMethods).toBe(false)
+		})
+
 		it('hides save button when has signers with disabled methods', async () => {
 			await updateMethods([{ name: 'sms', enabled: false }])
 			filesStore.canRequestSign = true
@@ -1384,6 +1684,22 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 			expect(filesStore.files[1]!.signers![1]!.signingOrder).toBe(2)
 		})
 
+		it('does not assign signing order numbers to observers when enabling', async () => {
+			await updateFile({
+				signatureFlow: 'parallel',
+				signers: [
+					{ email: 'signer1@example.com', signed: [], participantRole: 'signer' },
+					{ email: 'observer@example.com', signed: [], participantRole: 'observer', signingOrder: 2 },
+					{ email: 'signer2@example.com', signed: [], participantRole: 'signer' },
+				],
+			})
+			wrapper.vm.onPreserveOrderChange(true)
+			await wrapper.vm.$nextTick()
+			expect(filesStore.files[1]!.signers![0]!.signingOrder).toBe(1)
+			expect(filesStore.files[1]!.signers![1]!.signingOrder).toBeUndefined()
+			expect(filesStore.files[1]!.signers![2]!.signingOrder).toBe(2)
+		})
+
 		it('reassigns sequential orders when all signers share the same signingOrder', async () => {
 			// Signers saved via the API return signingOrder: 1 as default for all of them.
 			// The old check (!signer.signingOrder) would skip them because !1 === false,
@@ -1459,7 +1775,9 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 				canUseAsRequestOverride: false,
 			})
 			await updateFile({ signatureFlow: 'ordered_numeric' })
+			await flushPromises()
 			wrapper.vm.syncPreserveOrderWithFile()
+			expect(wrapper.vm.isAdminFlowForced).toBe(true)
 			expect(wrapper.vm.preserveOrder).toBe(false)
 		})
 
@@ -1574,6 +1892,357 @@ describe('RequestSignatureTab - Critical Business Rules', () => {
 				},
 			})
 			expect(wrapper.vm.isSignerMethodDisabled).toBe(true)
+		})
+	})
+
+	describe('RULE: warn requesters when signers have no visible signature field (#8323)', () => {
+		const alice = {
+			signRequestId: 101,
+			displayName: 'Alice',
+			email: 'alice@example.com',
+			participantRole: 'signer',
+			status: 0,
+		}
+		const bob = {
+			signRequestId: 102,
+			displayName: 'Bob',
+			email: 'bob@example.com',
+			participantRole: 'signer',
+			status: 0,
+		}
+		const daveObserver = {
+			signRequestId: 103,
+			displayName: 'Dave',
+			email: 'dave@example.com',
+			participantRole: 'observer',
+			status: 0,
+		}
+
+		it('does not show warning when all signing participants have visible signature fields', async () => {
+			await updateFile({
+				signers: [alice, bob],
+				visibleElements: [
+					{ elementId: 1, fileId: 1, signRequestId: 101, type: 'signature', coordinates: { page: 1, left: 10, top: 10 } },
+					{ elementId: 2, fileId: 1, signRequestId: 102, type: 'signature', coordinates: { page: 1, left: 20, top: 20 } },
+				],
+			})
+
+			await wrapper.vm.request()
+
+			expect(wrapper.vm.showConfirmRequest).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForFullRequest).toBe(false)
+			expect(wrapper.vm.signersWithoutVisibleSignatureForFullRequest).toEqual([])
+			expect(wrapper.text()).toContain('Send signature request?')
+			expect(wrapper.text()).not.toContain('Some signers have no visible signature field.')
+		})
+
+		it('shows warning with all signers listed when no signing participant has a visible signature field', async () => {
+			await updateFile({
+				signers: [alice, bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+
+			expect(wrapper.vm.showConfirmRequest).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForFullRequest).toBe(true)
+			expect(wrapper.vm.signersWithoutVisibleSignatureForFullRequest).toHaveLength(2)
+			expect(wrapper.text()).toContain('Some signers have no visible signature field.')
+			expect(wrapper.text()).toContain('A PDF can be digitally signed without showing a signature on the page.')
+			expect(wrapper.text()).toContain('No visible signature:')
+			expect(wrapper.text()).toContain('Alice')
+			expect(wrapper.text()).toContain('Bob')
+			expect(wrapper.text()).toContain('Do not warn me again when signers have no visible signature field')
+			expect(wrapper.text()).toContain('You can enable this warning again in LibreSign preferences.')
+		})
+
+		it('shows warning with only affected signers when signers are mixed', async () => {
+			await updateFile({
+				signers: [alice, bob],
+				visibleElements: [
+					{ elementId: 1, fileId: 1, signRequestId: 101, type: 'signature', coordinates: { page: 1, left: 10, top: 10 } },
+				],
+			})
+
+			await wrapper.vm.request()
+
+			expect(wrapper.vm.showConfirmRequest).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForFullRequest).toBe(true)
+			expect(wrapper.vm.signersWithoutVisibleSignatureForFullRequest).toEqual([expect.objectContaining({ signRequestId: 102 })])
+			expect(wrapper.text()).toContain('Bob')
+			const listItems = wrapper.findAll('.nc-dialog ul li')
+			expect(listItems.map((li) => li.text())).toContain('Bob')
+			expect(listItems.map((li) => li.text())).not.toContain('Alice')
+		})
+
+		it('ignores observer participants and does not show warning when only signers are covered', async () => {
+			await updateFile({
+				signers: [alice, daveObserver],
+				visibleElements: [
+					{ elementId: 1, fileId: 1, signRequestId: 101, type: 'signature', coordinates: { page: 1, left: 10, top: 10 } },
+				],
+			})
+
+			await wrapper.vm.request()
+
+			expect(wrapper.vm.showConfirmRequest).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForFullRequest).toBe(false)
+			expect(wrapper.vm.signersWithoutVisibleSignatureForFullRequest).toEqual([])
+			expect(wrapper.text()).not.toContain('Dave')
+			expect(wrapper.text()).not.toContain('Some signers have no visible signature field.')
+		})
+
+		it('does not count text or date fields as visible signature fields', async () => {
+			await updateFile({
+				signers: [bob],
+				visibleElements: [
+					{ elementId: 1, fileId: 1, signRequestId: 102, type: 'text', coordinates: { page: 1, left: 10, top: 10 } },
+					{ elementId: 2, fileId: 1, signRequestId: 102, type: 'date', coordinates: { page: 1, left: 20, top: 20 } },
+				],
+			})
+
+			await wrapper.vm.request()
+
+			expect(wrapper.vm.showConfirmRequest).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForFullRequest).toBe(true)
+			expect(wrapper.vm.signersWithoutVisibleSignatureForFullRequest).toEqual([expect.objectContaining({ signRequestId: 102 })])
+		})
+
+		it('does not show warning for individual request when selected signer has a visible signature field', async () => {
+			await updateFile({
+				signers: [alice, bob],
+				visibleElements: [
+					{ elementId: 1, fileId: 1, signRequestId: 101, type: 'signature', coordinates: { page: 1, left: 10, top: 10 } },
+				],
+			})
+
+			await wrapper.vm.requestSignatureForSigner(alice)
+
+			expect(wrapper.vm.showConfirmRequestSigner).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForSingleSigner).toBe(false)
+			expect(wrapper.vm.signersWithoutVisibleSignatureForSingleSigner).toEqual([])
+			expect(wrapper.text()).not.toContain('Some signers have no visible signature field.')
+		})
+
+		it('shows warning for individual request when selected signer has no visible signature field', async () => {
+			await updateFile({
+				signers: [alice, bob],
+				visibleElements: [
+					{ elementId: 1, fileId: 1, signRequestId: 101, type: 'signature', coordinates: { page: 1, left: 10, top: 10 } },
+				],
+			})
+
+			await wrapper.vm.requestSignatureForSigner(bob)
+
+			expect(wrapper.vm.showConfirmRequestSigner).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForSingleSigner).toBe(true)
+			expect(wrapper.vm.signersWithoutVisibleSignatureForSingleSigner).toEqual([expect.objectContaining({ signRequestId: 102 })])
+			expect(wrapper.text()).toContain('Some signers have no visible signature field.')
+			expect(wrapper.text()).toContain('Bob')
+		})
+
+		it('hides warning when warn_without_visible_signature_fields preference is false', async () => {
+			userConfigStore.onUpdate('warn_without_visible_signature_fields', false)
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+
+			expect(wrapper.vm.showConfirmRequest).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForFullRequest).toBe(false)
+			expect(wrapper.text()).not.toContain('Some signers have no visible signature field.')
+
+			await wrapper.vm.requestSignatureForSigner(bob)
+			expect(wrapper.vm.showConfirmRequestSigner).toBe(true)
+			expect(wrapper.vm.showMissingVisibleSignatureWarningForSingleSigner).toBe(false)
+		})
+
+		it('initializes the checkbox as unchecked every time the confirmation opens', async () => {
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+			await wrapper.vm.$nextTick()
+
+			const checkbox = wrapper.find('.nc-dialog .nc-checkbox-radio-switch input')
+			expect(checkbox.exists()).toBe(true)
+			expect((checkbox.element as HTMLInputElement).checked).toBe(false)
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(false)
+
+			await checkbox.setValue(true)
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(true)
+
+			wrapper.vm.closeConfirmRequestDialog()
+			await wrapper.vm.$nextTick()
+
+			await wrapper.vm.request()
+			await wrapper.vm.$nextTick()
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(false)
+
+			const checkboxReopened = wrapper.find('.nc-dialog .nc-checkbox-radio-switch input')
+			expect((checkboxReopened.element as HTMLInputElement).checked).toBe(false)
+		})
+
+		it('does not save preference and resets checkbox when Cancel is clicked or dialog closed', async () => {
+			const updateSpy = vi.spyOn(userConfigStore, 'update')
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+			await wrapper.vm.$nextTick()
+
+			const checkbox = wrapper.find('.nc-dialog .nc-checkbox-radio-switch input')
+			await checkbox.setValue(true)
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(true)
+
+			const cancelButton = wrapper.findAll('.nc-dialog button').find((btn) => btn.text().includes('Cancel'))
+			await cancelButton?.trigger('click')
+			await wrapper.vm.$nextTick()
+
+			expect(updateSpy).not.toHaveBeenCalled()
+			expect(wrapper.vm.showConfirmRequest).toBe(false)
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(false)
+
+			// Individual request dialog closing
+			await wrapper.vm.requestSignatureForSigner(bob)
+			await wrapper.vm.$nextTick()
+
+			const singleCheckbox = wrapper.find('.nc-dialog .nc-checkbox-radio-switch input')
+			await singleCheckbox.setValue(true)
+
+			const singleCancelButton = wrapper.findAll('.nc-dialog button').find((btn) => btn.text().includes('Cancel'))
+			await singleCancelButton?.trigger('click')
+			await wrapper.vm.$nextTick()
+
+			expect(updateSpy).not.toHaveBeenCalled()
+			expect(wrapper.vm.showConfirmRequestSigner).toBe(false)
+			expect(wrapper.vm.selectedSigner).toBeNull()
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(false)
+		})
+
+		it('saves preference only upon Send when the checkbox is selected', async () => {
+			const updateSpy = vi.spyOn(userConfigStore, 'update').mockResolvedValue(undefined as never)
+			vi.spyOn(filesStore, 'saveOrUpdateSignatureRequest').mockResolvedValue({ success: true } as never)
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+			await wrapper.vm.$nextTick()
+
+			const checkbox = wrapper.find('.nc-dialog .nc-checkbox-radio-switch input')
+			await checkbox.setValue(true)
+
+			const sendButton = wrapper.findAll('.nc-dialog button').find((btn) => btn.text().includes('Send'))
+			await sendButton?.trigger('click')
+			await flushPromises()
+			await wrapper.vm.$nextTick()
+
+			expect(updateSpy).toHaveBeenCalledWith('warn_without_visible_signature_fields', false)
+			expect(showSuccess).toHaveBeenCalledWith('Signature requested')
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(false)
+			expect(wrapper.vm.showConfirmRequest).toBe(false)
+		})
+
+		it('saves preference upon Send for individual request when the checkbox is selected', async () => {
+			const updateSpy = vi.spyOn(userConfigStore, 'update').mockResolvedValue(undefined as never)
+			vi.spyOn(filesStore, 'saveOrUpdateSignatureRequest').mockResolvedValue({ success: true } as never)
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.requestSignatureForSigner(bob)
+			await wrapper.vm.$nextTick()
+
+			const checkbox = wrapper.find('.nc-dialog .nc-checkbox-radio-switch input')
+			await checkbox.setValue(true)
+
+			const sendButton = wrapper.findAll('.nc-dialog button').find((btn) => btn.text().includes('Send'))
+			await sendButton?.trigger('click')
+			await flushPromises()
+			await wrapper.vm.$nextTick()
+
+			expect(updateSpy).toHaveBeenCalledWith('warn_without_visible_signature_fields', false)
+			expect(showSuccess).toHaveBeenCalledWith('Signature requested')
+			expect(wrapper.vm.disableMissingVisibleSignatureWarning).toBe(false)
+			expect(wrapper.vm.showConfirmRequestSigner).toBe(false)
+		})
+
+		it('rolls back local state and displays error toast when preference update fails', async () => {
+			expect(userConfigStore.warn_without_visible_signature_fields).toBe(true)
+
+			vi.spyOn(userConfigStore, 'update').mockImplementation(async (key, value) => {
+				userConfigStore.onUpdate(key, value)
+				throw new Error('Network error')
+			})
+			vi.spyOn(filesStore, 'saveOrUpdateSignatureRequest').mockResolvedValue({ success: true } as never)
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+			await wrapper.vm.$nextTick()
+
+			const checkbox = wrapper.find('.nc-dialog .nc-checkbox-radio-switch input')
+			await checkbox.setValue(true)
+
+			const sendButton = wrapper.findAll('.nc-dialog button').find((btn) => btn.text().includes('Send'))
+			await sendButton?.trigger('click')
+			await flushPromises()
+			await wrapper.vm.$nextTick()
+
+			expect(userConfigStore.warn_without_visible_signature_fields).toBe(true)
+			expect(showError).toHaveBeenCalledWith('Could not save your preference. Try again.')
+			expect(showSuccess).toHaveBeenCalledWith('Signature requested')
+			expect(wrapper.vm.showConfirmRequest).toBe(false)
+		})
+
+		it('does not save preference upon Send when the checkbox is not selected', async () => {
+			const updateSpy = vi.spyOn(userConfigStore, 'update').mockResolvedValue(undefined as never)
+			vi.spyOn(filesStore, 'saveOrUpdateSignatureRequest').mockResolvedValue({ success: true } as never)
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+			await wrapper.vm.$nextTick()
+
+			const sendButton = wrapper.findAll('.nc-dialog button').find((btn) => btn.text().includes('Send'))
+			await sendButton?.trigger('click')
+			await flushPromises()
+			await wrapper.vm.$nextTick()
+
+			expect(updateSpy).not.toHaveBeenCalled()
+			expect(showSuccess).toHaveBeenCalledWith('Signature requested')
+		})
+
+		it('never blocks request when signers have no visible signature fields', async () => {
+			vi.spyOn(filesStore, 'saveOrUpdateSignatureRequest').mockResolvedValue({ success: true } as never)
+			await updateFile({
+				signers: [bob],
+				visibleElements: [],
+			})
+
+			await wrapper.vm.request()
+			await wrapper.vm.$nextTick()
+
+			const sendButton = wrapper.findAll('.nc-dialog button').find((btn) => btn.text().includes('Send'))
+			await sendButton?.trigger('click')
+			await flushPromises()
+			await wrapper.vm.$nextTick()
+
+			expect(showSuccess).toHaveBeenCalledWith('Signature requested')
+			expect(showError).not.toHaveBeenCalled()
 		})
 	})
 })

@@ -199,6 +199,31 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/geoip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get GeoIP database configuration and status
+         * @description This endpoint requires admin access
+         */
+        get: operations["admin-get-geo-ip-config"];
+        put?: never;
+        /**
+         * Save GeoIP database path
+         * @description An empty path clears the configuration. The path may be saved even when the database file is not available yet; the returned status describes the current filesystem state.
+         *     This endpoint requires admin access
+         */
+        post: operations["admin-save-geo-ip-config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ocs/v2.php/apps/libresign/api/{apiVersion}/crl/list": {
         parameters: {
             query?: never;
@@ -257,6 +282,27 @@ export type paths = {
          * @description This endpoint requires admin access
          */
         post: operations["policy-set-system"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/policies/compound/system/{parentPolicyKey}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save several system-level values of the same composite policy at once
+         * @description Settings that only make sense together are written as one operation: the policy they belong to validates the resulting configuration before any of them is stored, so the result does not depend on the order of the values.
+         *     This endpoint requires admin access
+         */
+        post: operations["policy-set-system-compound"];
         delete?: never;
         options?: never;
         head?: never;
@@ -388,6 +434,11 @@ export type components = {
             success: boolean;
             message: string;
         };
+        EffectiveCompoundPolicyWriteResponse: components["schemas"]["MessageResponse"] & {
+            policies: {
+                [key: string]: components["schemas"]["EffectivePolicyState"];
+            };
+        };
         EffectivePolicyMeta: {
             defaultSystemValue?: components["schemas"]["EffectivePolicyValue"];
             appConfigKey?: string;
@@ -402,6 +453,8 @@ export type components = {
             parentPolicyKey?: string;
             compositeChildren?: string[];
             mailProviderAvailable?: boolean;
+            validationUrlIsPrivate?: boolean;
+            observerProfileEnabled?: boolean;
         };
         EffectivePolicyResponse: {
             policy: components["schemas"]["EffectivePolicyState"];
@@ -445,6 +498,16 @@ export type components = {
             status: "failure";
             message: string;
         };
+        GeoIpConfig: {
+            path: string | null;
+            status: components["schemas"]["GeoIpDatabaseStatus"];
+            databaseType?: string;
+            /** Format: int64 */
+            buildEpoch?: number;
+            modifiedAt?: string;
+        };
+        /** @enum {string} */
+        GeoIpDatabaseStatus: "not_configured" | "not_found" | "not_readable" | "invalid_database" | "unsupported_database" | "ready";
         HasRootCertResponse: {
             hasRootCert: boolean;
         };
@@ -1042,6 +1105,76 @@ export interface operations {
             };
         };
     };
+    "admin-get-geo-ip-config": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description GeoIP configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["GeoIpConfig"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-save-geo-ip-config": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Absolute path to a MaxMind City database, or empty to clear
+                     * @default
+                     */
+                    path?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description GeoIP configuration saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["GeoIpConfig"];
+                        };
+                    };
+                };
+            };
+        };
+    };
     "crl_api-list": {
         parameters: {
             query?: {
@@ -1239,6 +1372,73 @@ export interface operations {
                         ocs: {
                             meta: components["schemas"]["OCSMeta"];
                             data: components["schemas"]["SystemPolicyWriteResponse"];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid policy value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ErrorResponse"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "policy-set-system-compound": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+                /** @description Policy identifier the other settings are grouped under. */
+                parentPolicyKey: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description Values to persist, keyed by policy identifier. Null resets that policy to its default system value.
+                     * @default {}
+                     */
+                    values?: {
+                        [key: string]: (boolean | number | string | {
+                            [key: string]: Record<string, never>;
+                        }) | null;
+                    };
+                    /**
+                     * @description Whether lower layers may override each saved value, keyed by policy identifier.
+                     * @default {}
+                     */
+                    allowChildOverride?: {
+                        [key: string]: boolean;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["EffectiveCompoundPolicyWriteResponse"];
                         };
                     };
                 };
