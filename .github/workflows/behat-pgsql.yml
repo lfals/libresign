@@ -115,7 +115,8 @@ jobs:
           coverage: none
           ini-file: development
           # Required: re-enable pcntl_* functions that may be disabled via disable_functions
-          ini-values: disable_functions=
+          # php -S workers SIGSEGV in zend_objects_store_del under a JIT frame.
+          ini-values: disable_functions=, opcache.jit=disable, opcache.jit_buffer_size=0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -172,14 +173,7 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # php -S workers SIGSEGV in zend_objects_store_del (JIT). FrankenPHP
-          # php-server has no worker fork; TSA/fixtures still use real php -S.
-          BEHAT_WORKERS: "0"
-          BEHAT_HOST: "127.0.0.1"
         run: |
-          WRAP_BIN="$(./bin/ci-setup-frankenphp-behat-server.sh)"
-          export PATH="$WRAP_BIN:$PATH"
-          hash -r 2>/dev/null || true
           export BEHAT_RUN_AS=runner
           export BEHAT_VERBOSE="$RUNNER_DEBUG"
           vendor/bin/behat -f junit -f pretty --colors
