@@ -63,7 +63,7 @@ jobs:
         php-versions: ${{ fromJson(needs.matrix.outputs.php-version) }}
         server-versions: ${{ fromJson(needs.matrix.outputs.server-max) }}
 
-    name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }}
+    name: SQLite PHP ${{ matrix.mysql-versions }} PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }}
 
     services:
       mailpit:
@@ -79,7 +79,7 @@ jobs:
           echo "APP_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt update && sudo apt install poppler-utils gdb systemd-coredump
+        run: sudo apt update && sudo apt install poppler-utils
 
       - name: Checkout server
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,8 +106,7 @@ jobs:
           coverage: none
           ini-file: development
           # Required: re-enable pcntl_* functions that may be disabled via disable_functions
-          # Disable JIT so a worker SIGSEGV has a readable PHP frame, not n/a.
-          ini-values: disable_functions=, opcache.jit=disable, opcache.jit_buffer_size=0
+          ini-values: disable_functions=
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -164,56 +163,15 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # Probe: real php -S + original workers 10. FrankenPHP hid cURL 52.
-          BEHAT_WORKERS: "10"
-          BEHAT_HOST: "127.0.0.1"
-          # Capture worker PID, accept/close, and unexpected-death diagnostics.
-          BEHAT_VERBOSE: "1"
         run: |
           export BEHAT_RUN_AS=runner
-          # shellcheck disable=SC2086
-          vendor/bin/behat -v -f junit -f pretty --colors
+          export BEHAT_VERBOSE="$RUNNER_DEBUG"
+          vendor/bin/behat -f junit -f pretty --colors
 
       - name: Print logs
         if: always()
         run: |
-          echo "=== Behat web server processes ==="
-          ps aux | grep -E '[p]hp -S|[f]rankenphp' || echo "No Behat web server process"
-          echo "=== php -S verbose diagnostics ==="
-          shopt -s nullglob
-          files=(/tmp/behat-php-server-*)
-          if (( ${#files[@]} )); then
-            ls -la "${files[@]}"
-            for f in "${files[@]}"; do
-              echo "----- $f -----"
-              cat "$f"
-            done
-          else
-            echo "No /tmp/behat-php-server-* files"
-          fi
-          echo "=== nextcloud.log ==="
           cat data/nextcloud.log
-
-      - name: Backtrace PHP core dumps
-        if: failure()
-        run: |
-          sudo coredumpctl --no-pager list || true
-          {
-            echo "===== latest php core ====="
-            sudo coredumpctl --no-pager info || true
-            echo "===== gdb bt full ====="
-            sudo coredumpctl --no-pager debug --debugger=gdb --debugger-arguments="-batch -ex 'set pagination off' -ex 'thread apply all bt full' -ex 'info registers' -ex 'info sharedlibrary'" || true
-          } | tee /tmp/php-s-gdb-bt.txt
-
-      - name: Upload PHP server diagnostics
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: behat-sqlite-server-diagnostics-php${{ matrix.php-versions }}-nc${{ matrix.server-versions }}
-          path: |
-            /tmp/behat-php-server-*
-            /tmp/php-s-gdb-bt.txt
-          if-no-files-found: ignore
 
   summary:
     permissions:
