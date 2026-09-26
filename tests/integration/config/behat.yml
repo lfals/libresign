@@ -16,7 +16,8 @@ default:
       base_url: http://mailpit:8025
     PhpBuiltin\Server:
       runAs: www-data
-      # Keep >=2 so nested same-server HTTP (e.g. develop/pdf) cannot deadlock.
+      # Local default. CI replaces php -S with FrankenPHP and sets BEHAT_WORKERS=0.
+      # Keep >=2 locally so nested same-server HTTP (e.g. develop/pdf) cannot deadlock.
       workers: 2
     jarnaiz\JUnitFormatter\JUnitFormatterExtension:
       filename: report.xml

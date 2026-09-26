@@ -179,9 +179,14 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # Keep >=2 so nested same-server HTTP (e.g. develop/pdf) cannot deadlock.
-          BEHAT_WORKERS: "2"
+          # FrankenPHP php-server does not use PHP_CLI_SERVER_WORKERS.
+          BEHAT_WORKERS: "0"
+          # Force IPv4 so server bind and Guzzle/cURL agree.
+          BEHAT_HOST: "127.0.0.1"
         run: |
+          WRAP_BIN="$(./bin/ci-setup-frankenphp-behat-server.sh)"
+          export PATH="$WRAP_BIN:$PATH"
+          hash -r 2>/dev/null || true
           export BEHAT_RUN_AS=runner
           export BEHAT_VERBOSE="$RUNNER_DEBUG"
           # shellcheck disable=SC2086
@@ -190,6 +195,9 @@ jobs:
       - name: Print logs
         if: always()
         run: |
+          echo "=== Behat web server processes ==="
+          ps aux | grep -E '[p]hp -S|[f]rankenphp' || echo "No Behat web server process"
+          echo "=== nextcloud.log ==="
           cat data/nextcloud.log
 
       - name: List PHP core dumps
