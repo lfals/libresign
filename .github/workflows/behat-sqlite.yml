@@ -59,23 +59,11 @@ jobs:
     if: needs.changes.outputs.src != 'false'
 
     strategy:
-      fail-fast: false
       matrix:
         php-versions: ${{ fromJson(needs.matrix.outputs.php-version) }}
         server-versions: ${{ fromJson(needs.matrix.outputs.server-max) }}
-        # Flat shard key so `act --matrix shard:sign` can select a single cell.
-        shard: [account-admin, file-notify, page-policies, sign]
-        include:
-          - shard: account-admin
-            paths: features/account features/admin features/build
-          - shard: file-notify
-            paths: features/file features/identify-account features/notification
-          - shard: page-policies
-            paths: features/page features/policies features/settings
-          - shard: sign
-            paths: features/sign
 
-    name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }} (${{ matrix.shard }})
+    name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }}
 
     services:
       mailpit:
@@ -184,7 +172,7 @@ jobs:
         run: |
           export BEHAT_RUN_AS=runner
           # shellcheck disable=SC2086
-          vendor/bin/behat -v -f junit -f pretty --colors ${{ matrix.paths }}
+          vendor/bin/behat -v -f junit -f pretty --colors
 
       - name: Print logs
         if: always()
@@ -221,7 +209,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: behat-sqlite-server-diagnostics-php${{ matrix.php-versions }}-nc${{ matrix.server-versions }}-${{ matrix.shard }}
+          name: behat-sqlite-server-diagnostics-php${{ matrix.php-versions }}-nc${{ matrix.server-versions }}
           path: |
             /tmp/behat-php-server-*
             /tmp/php-s-gdb-bt.txt
