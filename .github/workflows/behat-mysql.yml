@@ -101,11 +101,7 @@ jobs:
           echo "APP_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt update && sudo apt install poppler-utils
-
-      - name: Install PHP crash diagnostics
-        if: runner.debug == '1'
-        run: sudo apt install -y gdb systemd-coredump
+        run: sudo apt update && sudo apt install poppler-utils gdb systemd-coredump
 
       - name: Checkout server
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,7 +128,8 @@ jobs:
           coverage: none
           ini-file: development
           # Required: re-enable pcntl_* functions that may be disabled via disable_functions
-          ini-values: disable_functions=
+          # Disable JIT so a worker SIGSEGV has a readable PHP frame, not n/a.
+          ini-values: disable_functions=, opcache.jit=disable, opcache.jit_buffer_size=0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -224,17 +221,25 @@ jobs:
           echo "=== nextcloud.log ==="
           cat data/nextcloud.log
 
-      - name: List PHP core dumps
+      - name: Backtrace PHP core dumps
         if: failure()
         run: |
           sudo coredumpctl --no-pager list || true
+          {
+            echo "===== latest php core ====="
+            sudo coredumpctl --no-pager info || true
+            echo "===== gdb bt full ====="
+            sudo coredumpctl --no-pager debug --debugger=gdb --debugger-arguments="-batch -ex 'set pagination off' -ex 'thread apply all bt full' -ex 'info registers' -ex 'info sharedlibrary'" || true
+          } | tee /tmp/php-s-gdb-bt.txt
 
       - name: Upload PHP server diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: behat-mysql-server-diagnostics-php${{ matrix.php-versions }}-nc${{ matrix.server-versions }}-${{ matrix.shard }}
-          path: /tmp/behat-php-server-*
+          path: |
+            /tmp/behat-php-server-*
+            /tmp/php-s-gdb-bt.txt
           if-no-files-found: ignore
 
   summary:
