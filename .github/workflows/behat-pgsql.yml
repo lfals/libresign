@@ -188,37 +188,46 @@ jobs:
         working-directory: apps/${{ env.APP_NAME }}/tests/integration
         env:
           BEHAT_ROOT_DIR: ../../../../
-          # FrankenPHP php-server does not use PHP_CLI_SERVER_WORKERS.
-          BEHAT_WORKERS: "0"
-          # Force IPv4 so server bind and Guzzle/cURL agree.
+          # Probe: real php -S + workers 2. FrankenPHP hid cURL 52.
+          BEHAT_WORKERS: "2"
           BEHAT_HOST: "127.0.0.1"
+          # Capture worker PID, accept/close, and unexpected-death diagnostics.
+          BEHAT_VERBOSE: "1"
         run: |
-          WRAP_BIN="$(./bin/ci-setup-frankenphp-behat-server.sh)"
-          export PATH="$WRAP_BIN:$PATH"
-          hash -r 2>/dev/null || true
           export BEHAT_RUN_AS=runner
-          export BEHAT_VERBOSE="$RUNNER_DEBUG"
           # shellcheck disable=SC2086
-          vendor/bin/behat -f junit -f pretty --colors ${{ matrix.paths }}
+          vendor/bin/behat -v -f junit -f pretty --colors ${{ matrix.paths }}
 
       - name: Print logs
         if: always()
         run: |
           echo "=== Behat web server processes ==="
           ps aux | grep -E '[p]hp -S|[f]rankenphp' || echo "No Behat web server process"
+          echo "=== php -S verbose diagnostics ==="
+          shopt -s nullglob
+          files=(/tmp/behat-php-server-*)
+          if (( ${#files[@]} )); then
+            ls -la "${files[@]}"
+            for f in "${files[@]}"; do
+              echo "----- $f -----"
+              cat "$f"
+            done
+          else
+            echo "No /tmp/behat-php-server-* files"
+          fi
           echo "=== nextcloud.log ==="
           cat data/nextcloud.log
 
       - name: List PHP core dumps
-        if: failure() && runner.debug == '1'
+        if: failure()
         run: |
           sudo coredumpctl --no-pager list || true
 
       - name: Upload PHP server diagnostics
-        if: failure() && runner.debug == '1'
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: behat-pgsql-server-diagnostics-php${{ matrix.php-versions }}-nc${{ matrix.server-versions }}
+          name: behat-pgsql-server-diagnostics-php${{ matrix.php-versions }}-nc${{ matrix.server-versions }}-${{ matrix.shard }}
           path: /tmp/behat-php-server-*
           if-no-files-found: ignore
 
