@@ -181,9 +181,8 @@ class SignersLoader {
 				$fileData->signers[$index]->me = $currentUserData->me;
 			}
 
-			$fileData->signers[$index]->sign_request_uuid = $signer->getUuid();
-
 			if ($fileData->signers[$index]->me) {
+				$fileData->signers[$index]->sign_request_uuid = $signer->getUuid();
 				if (isset($fileData->settings) && $this->isSignersTurn($file, $signer, $signers)) {
 					$fileData->settings['canSign'] = true;
 				}
