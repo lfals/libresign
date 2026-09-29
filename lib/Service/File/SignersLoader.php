@@ -176,13 +176,36 @@ class SignersLoader {
 							$currentUserData->me = true;
 							break 2;
 						}
+						// Account identifiers may be stored as an email; resolve
+						// to the Nextcloud user like Account::getSigner() does.
+						if ($entity->getIdentifierKey() === IdentifyMethodService::IDENTIFY_ACCOUNT
+							&& $options->getMe() instanceof \OCP\IUser
+						) {
+							$accountUser = $this->userManager->get($entity->getIdentifierValue());
+							if ($accountUser === null) {
+								$byEmail = $this->userManager->getByEmail($entity->getIdentifierValue());
+								$accountUser = is_array($byEmail) && count($byEmail) === 1
+									? current($byEmail)
+									: null;
+							}
+							if ($accountUser instanceof \OCP\IUser
+								&& $accountUser->getUID() === $options->getMe()->getUID()
+							) {
+								$currentUserData->me = true;
+								break 2;
+							}
+						}
 					}
 				}
 				$fileData->signers[$index]->me = $currentUserData->me;
 			}
 
+			// Top-level validate payloads need sign_request_uuid on every signer so
+			// the SPA can mark the current signer from the route uuid even when
+			// `me` was not resolved yet. Nested child summaries omit this field.
+			$fileData->signers[$index]->sign_request_uuid = $signer->getUuid();
+
 			if ($fileData->signers[$index]->me) {
-				$fileData->signers[$index]->sign_request_uuid = $signer->getUuid();
 				if (isset($fileData->settings) && $this->isSignersTurn($file, $signer, $signers)) {
 					$fileData->settings['canSign'] = true;
 				}
