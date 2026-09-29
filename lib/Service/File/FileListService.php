@@ -30,6 +30,7 @@ use OCA\Libresign\Service\IdentifyMethodService;
 use OCA\Libresign\Service\SignatureRejection\SignatureRejectionVisibilityService;
 use OCA\Libresign\Service\SignerGeolocation\SignerGeolocationMetadataValidator;
 use OCA\Libresign\Service\SignerGeolocation\SignerGeolocationPolicyService;
+use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Db\Entity;
 use OCP\Files\File as NodeFile;
 use OCP\IAppConfig;
@@ -1102,7 +1103,7 @@ class FileListService {
 				}
 				try {
 					$signRequest = $this->signRequestMapper->getById((int)$signRequestId);
-				} catch (\Throwable) {
+				} catch (DoesNotExistException) {
 					continue;
 				}
 				$canViewSensitive = !empty($signer['me']) || $isRequester;
