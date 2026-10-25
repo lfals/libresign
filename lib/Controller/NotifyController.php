@@ -16,6 +16,7 @@ use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\ApiRoute;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\OpenAPI;
 use OCP\AppFramework\Http\DataResponse;
 use OCP\IL10N;
 use OCP\IRequest;
@@ -48,6 +49,7 @@ class NotifyController extends AEnvironmentAwareController {
 	 */
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[OpenAPI(tags: ['notifications'])]
 	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/notify/signers', requirements: ['apiVersion' => '(v1)'])]
 	public function signers(int $fileId, array $signers): DataResponse {
 		try {
@@ -83,6 +85,7 @@ class NotifyController extends AEnvironmentAwareController {
 	 */
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[OpenAPI(tags: ['notifications'])]
 	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/notify/signer', requirements: ['apiVersion' => '(v1)'])]
 	public function signer(int $fileId, int $signRequestId): DataResponse {
 		try {
@@ -120,6 +123,7 @@ class NotifyController extends AEnvironmentAwareController {
 	 * 200: OK
 	 */
 	#[NoAdminRequired]
+	#[OpenAPI(tags: ['notifications'])]
 	#[ApiRoute(verb: 'DELETE', url: '/api/{apiVersion}/notify/notification', requirements: ['apiVersion' => '(v1)'])]
 	public function notificationDismiss(
 		string $objectType,
